@@ -3,6 +3,8 @@ name = "reader"
 version = "0.1.0"
 description = "A reader that keeps your place across desktop and Android"
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/Carlos-err406/reader"
 rust-version = "1.82"
 
 [lib]
