@@ -12,6 +12,9 @@ pub struct Available {
     pub version: String,
     pub url: String,
     pub notes: String,
+    /// Published by GitHub for the uploaded file; the phone checks the download against it.
+    pub sha256: String,
+    pub size: u64,
 }
 
 #[derive(Deserialize)]
@@ -30,7 +33,13 @@ struct Release {
 struct Asset {
     name: String,
     browser_download_url: String,
+    #[serde(default)]
+    digest: String,
+    #[serde(default)]
+    size: u64,
 }
+
+const MAX_APK: u64 = 200 * 1024 * 1024;
 
 /// `major.minor.patch`, ignoring a leading `v`; anything else isn't a release we offer.
 pub fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
@@ -50,11 +59,14 @@ fn newer(release: Release, current: &str) -> Option<Available> {
         return None;
     }
     let apk = release.assets.into_iter().find(|a| a.name.ends_with(".apk"))?;
-    // Only ever hand the system a download from this repository's releases.
-    apk.browser_download_url.starts_with(DOWNLOADS).then(|| Available {
+    let sha256 = apk.digest.strip_prefix("sha256:").filter(|d| crate::sync::model::is_sha256(d))?.to_owned();
+    // Only ever download from this repository's releases, and only a sensibly sized file.
+    (apk.browser_download_url.starts_with(DOWNLOADS) && (1..=MAX_APK).contains(&apk.size)).then(|| Available {
         version: release.tag_name.trim_start_matches('v').to_owned(),
         url: apk.browser_download_url,
         notes: release.body.chars().take(2000).collect(),
+        sha256,
+        size: apk.size,
     })
 }
 
@@ -74,9 +86,6 @@ pub async fn check() -> Result<Option<Available>> {
     }
 }
 
-pub fn is_release_download(url: &str) -> bool {
-    url.starts_with(DOWNLOADS) && url.ends_with(".apk")
-}
 
 #[cfg(test)]
 mod tests {
@@ -88,7 +97,12 @@ mod tests {
             body: "Notes".into(),
             draft: false,
             prerelease: false,
-            assets: vec![Asset { name: "Reader.apk".into(), browser_download_url: url.into() }],
+            assets: vec![Asset {
+                name: "Reader.apk".into(),
+                browser_download_url: url.into(),
+                digest: format!("sha256:{}", "a".repeat(64)),
+                size: 1000,
+            }],
         }
     }
 
@@ -100,6 +114,13 @@ mod tests {
         assert!(newer(release("v0.0.9", &ours), "0.1.0").is_none());
         assert!(newer(release("v0.2.0", "https://evil.example/Reader.apk"), "0.1.0").is_none());
         assert!(newer(release("nightly", &ours), "0.1.0").is_none());
+        // No published checksum, or an absurd size: not offered.
+        let mut unchecked = release("v0.2.0", &ours);
+        unchecked.assets[0].digest.clear();
+        assert!(newer(unchecked, "0.1.0").is_none());
+        let mut huge = release("v0.2.0", &ours);
+        huge.assets[0].size = MAX_APK + 1;
+        assert!(newer(huge, "0.1.0").is_none());
         let mut draft = release("v0.3.0", &ours);
         draft.draft = true;
         assert!(newer(draft, "0.1.0").is_none());

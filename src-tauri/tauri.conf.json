@@ -48,6 +48,13 @@
       "endpoints": [
         "https://github.com/Carlos-err406/reader/releases/latest/download/latest.json"
       ]
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "org.reader.books"
+        ]
+      }
     }
   }
 }

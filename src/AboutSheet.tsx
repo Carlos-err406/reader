@@ -36,7 +36,11 @@ interface Props {
   platform: "desktop" | "android";
 }
 
-type Check = { state: "idle" | "checking" | "current" | "installing" } | { state: "available"; offer: Offer } | { state: "error"; text: string };
+type Check =
+  | { state: "idle" | "checking" | "current" }
+  | { state: "installing"; progress: number }
+  | { state: "available"; offer: Offer; note?: string }
+  | { state: "error"; text: string };
 
 function LinkRow({ href, icon, children }: { href: string; icon: ReactNode; children: ReactNode }) {
   return (
@@ -75,10 +79,12 @@ export function AboutSheet({ open, onOpenChange, platform }: Props) {
     }
   };
   const install = async (offer: Offer) => {
-    setCheck({ state: "installing" });
+    setCheck({ state: "installing", progress: 0 });
     try {
-      await offer.install(() => {});
-      if (platform === "android") setCheck({ state: "available", offer });
+      const result = await offer.install((progress) => setCheck({ state: "installing", progress }));
+      if (result === "permission")
+        setCheck({ state: "available", offer, note: "Allow Reader to install updates, then tap Install again." });
+      else if (result === "installing") setCheck({ state: "available", offer, note: "Confirm in Android's installer." });
     } catch (e) {
       setCheck({ state: "error", text: message(e) });
     }
@@ -104,14 +110,14 @@ export function AboutSheet({ open, onOpenChange, platform }: Props) {
               <CircleCheck className="size-4 text-ok" /> You're up to date.
             </span>
           )}
-          {check.state === "available" && `Reader ${check.offer.version} is available.`}
-          {check.state === "installing" && (platform === "android" ? "Opening the download…" : "Installing, Reader will restart…")}
+          {check.state === "available" && (check.note ?? `Reader ${check.offer.version} is available.`)}
+          {check.state === "installing" && `Downloading… ${Math.round(check.progress * 100)}%`}
           {check.state === "error" && <span className="text-destructive">{check.text}</span>}
         </div>
         {check.state === "available" ? (
           <Button size="sm" className="rounded-full" onClick={() => void install(check.offer)}>
             <Download />
-            {platform === "android" ? "Download" : "Install and restart"}
+            {platform === "android" ? "Install" : "Install and restart"}
           </Button>
         ) : (
           <Button

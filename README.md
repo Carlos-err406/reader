@@ -9,7 +9,7 @@ One Tauri 2 app builds for both platforms. Books are stored as SQLite BLOBs. Syn
 Download the latest release from [GitHub Releases](https://github.com/Carlos-err406/reader/releases/latest).
 
 - **macOS** (Apple Silicon or Intel): open the `.dmg` and drag Reader to Applications. Reader isn't notarized by Apple, so the first time you have to right-click it and choose **Open**. After that it updates itself.
-- **Android**: open the `.apk` on the phone and allow your browser to install apps. When a new version is out, Reader offers to download it.
+- **Android**: open the `.apk` on the phone and allow your browser to install apps. When a new version is out, Reader downloads it, checks it and opens Android's installer. The first time, Android asks you to allow Reader to install updates.
 
 ## Develop
 

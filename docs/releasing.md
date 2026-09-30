@@ -23,7 +23,7 @@ The publish job then writes `latest.json` (the desktop updater manifest) and a `
 ## How installed copies update
 
 - **Desktop**: Tauri's updater reads `releases/latest/download/latest.json`, checks the bundle signature against the public key in `tauri.conf.json`, installs the bundle and restarts. Losing the updater private key means installed copies can no longer update, and users would have to reinstall by hand.
-- **Android**: the app compares its version with the latest GitHub release and offers that release's APK, but only from this repository's download URLs. Android installs it over the existing app only if it's signed by the same key.
+- **Android**: the app compares its version with the latest GitHub release and offers that release's APK, but only from this repository's download URLs, and only when GitHub reports the file's SHA-256 digest. `AppUpdatePlugin.kt` downloads it into the app's cache, then checks the size and digest, the package name, the version, a higher version code, and that the signer matches the installed app's. Only then does it open Android's installer. The first update asks the user to allow Reader to install apps (`REQUEST_INSTALL_PACKAGES`).
 
 ## Secrets
 

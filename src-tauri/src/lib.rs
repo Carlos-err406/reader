@@ -201,25 +201,16 @@ async fn check_apk_update() -> Result<Option<updates::Available>> {
     updates::check().await
 }
 
-/// Opens the release APK in the system browser, which downloads it and offers to install.
-#[tauri::command]
-fn open_apk(url: String, app: tauri::AppHandle) -> Result<()> {
-    use tauri_plugin_opener::OpenerExt;
-    if !updates::is_release_download(&url) {
-        bail!("Not a Reader release");
-    }
-    app.opener().open_url(url, None::<&str>).map_err(|e| Error::new(e.to_string()))
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
     #[cfg(not(target_os = "android"))]
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init());
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_deep_link::init());
     #[cfg(target_os = "android")]
-    let builder = builder.plugin(google::plugin()).plugin(system_ui::plugin());
+    let builder = builder.plugin(google::plugin()).plugin(system_ui::plugin()).plugin(system_ui::updater());
     builder
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
@@ -253,6 +244,21 @@ pub fn run() {
                 }),
             );
             tauri::async_runtime::spawn(engine.clone().run());
+
+            // The Google sign-in page sends the browser to org.reader.books://connected; macOS
+            // asks "Open Reader?" and hands the link here. Bring the window back to the front.
+            #[cfg(not(target_os = "android"))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let handle = app.handle().clone();
+                app.deep_link().on_open_url(move |_event| {
+                    if let Some(window) = handle.get_webview_window("main") {
+                        let _ = window.unminimize();
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                });
+            }
             app.manage(AppState { store, auth, sync: engine });
             Ok(())
         })
@@ -276,7 +282,7 @@ pub fn run() {
             app_foreground,
             system_ui::set_immersive,
             check_apk_update,
-            open_apk,
+            system_ui::install_update,
             open_link,
         ])
         .run(tauri::generate_context!())

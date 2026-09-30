@@ -3,20 +3,34 @@ import { Download, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, message } from "./api";
 
+/** What happened: installed (desktop restarts), the installer opened, or Android needs permission first. */
+export type InstallResult = "installing" | "permission" | void;
+
 export interface Offer {
   version: string;
   notes: string;
-  install: (progress: (fraction: number) => void) => Promise<void>;
+  install: (progress: (fraction: number) => void) => Promise<InstallResult>;
+}
+
+/** Android: Reader downloads and checks the APK itself, then opens Android's installer. */
+async function installApk(progress: (fraction: number) => void): Promise<InstallResult> {
+  const { addPluginListener } = await import("@tauri-apps/api/core");
+  const listener = await addPluginListener<{ fraction: number }>("app-update", "progress", (e) => progress(e.fraction));
+  try {
+    return await api.installUpdate();
+  } finally {
+    void listener.unregister();
+  }
 }
 
 const DISMISSED = "reader:update-dismissed";
 const EVERY = 6 * 60 * 60 * 1000;
 
-/** Desktop installs signed updates in place; Android hands the new APK to the system. */
+/** Desktop installs signed updates in place; Android verifies the new APK and opens its installer. */
 export async function findUpdate(platform: "desktop" | "android"): Promise<Offer | null> {
   if (platform === "android") {
     const apk = await api.checkApkUpdate();
-    return apk && { version: apk.version, notes: apk.notes, install: () => api.openApk(apk.url) };
+    return apk && { version: apk.version, notes: apk.notes, install: installApk };
   }
   const { check } = await import("@tauri-apps/plugin-updater");
   const update = await check();
@@ -42,6 +56,7 @@ export function UpdateBanner({ platform }: { platform: "desktop" | "android" }) 
   const [offer, setOffer] = useState<Offer>();
   const [progress, setProgress] = useState<number>();
   const [error, setError] = useState<string>();
+  const [note, setNote] = useState<string>();
 
   useEffect(() => {
     let live = true;
@@ -76,10 +91,13 @@ export function UpdateBanner({ platform }: { platform: "desktop" | "android" }) 
   };
   const install = async () => {
     setError(undefined);
+    setNote(undefined);
     setProgress(0);
     try {
-      await offer.install(setProgress);
-      if (platform === "android") setProgress(undefined);
+      const result = await offer.install(setProgress);
+      setProgress(undefined);
+      if (result === "permission") setNote("Allow Reader to install updates, then come back and tap Install again.");
+      if (result === "installing") setNote("Confirm in Android's installer. Your library stays.");
     } catch (e) {
       setProgress(undefined);
       setError(message(e));
@@ -92,16 +110,14 @@ export function UpdateBanner({ platform }: { platform: "desktop" | "android" }) 
         <strong className="block text-sm">Reader {offer.version} is available</strong>
         <span className="text-xs text-muted-foreground">
           {error ??
-            (installing && platform === "desktop"
+            (installing
               ? `Downloading… ${Math.round((progress ?? 0) * 100)}%`
-              : platform === "android"
-                ? "Opens the download; install it when it finishes. Your library stays."
-                : "Installs and restarts. Your library stays.")}
+              : (note ?? (platform === "android" ? "Downloads, checks and installs. Your library stays." : "Installs and restarts. Your library stays.")))}
         </span>
       </div>
       <Button size="sm" className="rounded-full" disabled={installing} onClick={install}>
         <Download />
-        {platform === "android" ? "Download" : "Install and restart"}
+        {platform === "android" ? "Install" : "Install and restart"}
       </Button>
       <Button variant="ghost" size="icon-sm" aria-label="Not now" onClick={dismiss} disabled={installing}>
         <X />

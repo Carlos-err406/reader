@@ -6,7 +6,8 @@
 - `src-tauri/src/store.rs`: SQLite. `records` holds the synced state, `blobs` holds book bytes (a local cache) and `meta` holds per-device state (replica id, clock, sync settings, pending checkpoint).
 - `src-tauri/src/library.rs`: import, remove, progress and bookmarks. Every write is stamped with a revision in the same transaction.
 - `src-tauri/src/sync/`: `model.rs` (wire format and validation), `engine.rs` (the scheduler and sync algorithm, generic over a `Transport`), `drive.rs` (the Google Drive transport).
-- `src-tauri/src/google/`: `desktop.rs` (browser, PKCE, loopback callback, refresh token in the OS keychain) and `android.rs`, which calls `gen/android/.../GoogleAuthPlugin.kt` (Play services `AuthorizationClient`).
+- `src-tauri/src/google/`: `desktop.rs` (browser, PKCE, loopback callback that answers with a styled page and an `org.reader.books://connected` link back to the app, refresh token in the OS keychain) and `android.rs`, which calls `gen/android/.../GoogleAuthPlugin.kt` (Play services `AuthorizationClient`).
+- `src-tauri/src/updates.rs` finds the newest Android release on GitHub. `system_ui::install_update` passes it to `AppUpdatePlugin.kt`, which downloads and verifies the APK and opens Android's installer.
 
 Tokens never enter the webview. The UI never sees Drive.
 

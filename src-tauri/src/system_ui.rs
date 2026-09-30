@@ -14,6 +14,51 @@ mod android {
             })
             .build()
     }
+
+    pub struct Updater(pub PluginHandle<Wry>);
+
+    /// In-app updates (AppUpdatePlugin.kt). Registered as "app-update" so the webview can listen
+    /// for download progress.
+    pub fn updater() -> TauriPlugin<Wry> {
+        Builder::new("app-update")
+            .setup(|app, api| {
+                app.manage(Updater(api.register_android_plugin("org.reader.books", "AppUpdatePlugin")?));
+                Ok(())
+            })
+            .build()
+    }
+}
+#[cfg(target_os = "android")]
+pub use android::updater;
+
+/// Android: download, verify and install the newest release APK. Rust looks the release up
+/// itself, so the webview can't point the installer at anything else. Returns "installing"
+/// once Android's installer is open, or "permission" if Reader must be allowed to install first.
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> crate::error::Result<String> {
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager;
+        let Some(release) = crate::updates::check().await? else {
+            return Err(crate::error::Error::new("Reader is up to date"));
+        };
+        let handle = app.state::<android::Updater>().0.clone();
+        let reply = tauri::async_runtime::spawn_blocking(move || {
+            handle.run_mobile_plugin::<serde_json::Value>(
+                "install",
+                serde_json::json!({ "url": release.url, "sha256": release.sha256, "size": release.size, "version": release.version }),
+            )
+        })
+        .await
+        .map_err(|e| crate::error::Error::new(e.to_string()))?
+        .map_err(|e| crate::error::Error::new(e.to_string()))?;
+        Ok(reply["state"].as_str().unwrap_or("installing").to_owned())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Err(crate::error::Error::new("Desktop updates install through the updater"))
+    }
 }
 #[cfg(target_os = "android")]
 pub use android::plugin;
