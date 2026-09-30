@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Panel } from "@/components/Panel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
+import { GoogleLogo } from "@/components/Logos";
 import { cn } from "@/lib/utils";
 import { api, message, type Status } from "./api";
 import { ago, countdown, plural, statusLine, type Tone } from "./format";
@@ -99,7 +100,14 @@ export function SyncPanel({ open, onOpenChange, status, onStatus }: Props) {
         </p>
       ) : !status.enabled ? (
         <div className="grid gap-2">
-          <Button size="lg" disabled={busy || google.connecting} onClick={() => run(api.enableSync)}>
+          <Button
+            size="lg"
+            variant="outline"
+            className="bg-card"
+            disabled={busy || google.connecting}
+            onClick={() => run(api.enableSync)}
+          >
+            <GoogleLogo />
             {signingIn
               ? status.platform === "desktop"
                 ? "Finish signing in in your browser…"
@@ -129,7 +137,12 @@ export function SyncPanel({ open, onOpenChange, status, onStatus }: Props) {
 
       {(status.enabled || google.connected) && (
         <dl className="border-t">
-          <Fact label="Account">{status.account ?? (google.connected ? "Google Drive" : "Not connected")}</Fact>
+          <Fact label="Account">
+            <span className="flex min-w-0 items-center gap-2">
+              <GoogleLogo size={16} />
+              <span className="min-w-0 break-words">{status.account ?? (google.connected ? "Google Drive" : "Not connected")}</span>
+            </span>
+          </Fact>
           <Fact label="Library">
             {plural(library.books, "book")} · {plural(library.bookmarks, "bookmark")} · reading positions
             {library.localBooks < library.books && (

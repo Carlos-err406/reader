@@ -3,7 +3,7 @@ import { Download, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, message } from "./api";
 
-interface Offer {
+export interface Offer {
   version: string;
   notes: string;
   install: (progress: (fraction: number) => void) => Promise<void>;
@@ -13,7 +13,7 @@ const DISMISSED = "reader:update-dismissed";
 const EVERY = 6 * 60 * 60 * 1000;
 
 /** Desktop installs signed updates in place; Android hands the new APK to the system. */
-async function findUpdate(platform: "desktop" | "android"): Promise<Offer | null> {
+export async function findUpdate(platform: "desktop" | "android"): Promise<Offer | null> {
   if (platform === "android") {
     const apk = await api.checkApkUpdate();
     return apk && { version: apk.version, notes: apk.notes, install: () => api.openApk(apk.url) };

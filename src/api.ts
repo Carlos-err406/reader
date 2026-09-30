@@ -93,6 +93,8 @@ export const api = {
   /** Android: a newer release APK on GitHub, if any (desktop uses the Tauri updater). */
   checkApkUpdate: () => invoke<{ version: string; url: string; notes: string } | null>("check_apk_update"),
   openApk: (url: string) => invoke<void>("open_apk", { url }),
+  /** Opens a github.com page in the browser; anything else is refused. */
+  openLink: (url: string) => invoke<void>("open_link", { url }),
   /** Android: hide the system bars while reading. A no-op on desktop. */
   setImmersive: (on: boolean) => invoke<void>("set_immersive", { on }),
 };

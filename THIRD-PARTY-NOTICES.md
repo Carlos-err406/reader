@@ -16,6 +16,8 @@ Reader bundles the following open-source software. Each item keeps its own licen
 | rusqlite and bundled SQLite | MIT / public domain | https://github.com/rusqlite/rusqlite |
 | reqwest, tokio, serde and other Rust crates | MIT and/or Apache-2.0 | see `src-tauri/Cargo.lock` |
 
+The GitHub mark comes from [Primer Octicons](https://github.com/primer/octicons) (MIT; see `src/assets/octicons-LICENSE.txt`). The Google "G" is Google's own branding artwork (see `src/assets/google-g.md`). Google, Google Drive and the Google logo are trademarks of Google LLC, and GitHub is a trademark of GitHub, Inc.
+
 Rust and npm dependencies are listed in full in `src-tauri/Cargo.lock` and `pnpm-lock.yaml`.
 
 ## Fonts

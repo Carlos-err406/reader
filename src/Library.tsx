@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { EllipsisVertical, Plus, Trash2, Type } from "lucide-react";
+import { EllipsisVertical, Info, Plus, Trash2, Type } from "lucide-react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,6 +16,7 @@ import { cachedCover, loadCover, makeCover } from "./covers";
 import { SyncPanel } from "./SyncPanel";
 import { DisplaySheet } from "./DisplaySheet";
 import { UpdateBanner } from "./UpdateBanner";
+import { AboutSheet } from "./AboutSheet";
 import { usePullToSync } from "./usePullToSync";
 import { PullIndicator } from "./PullIndicator";
 
@@ -61,6 +62,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
   const [error, setError] = useState<string>();
   const [showSync, setShowSync] = useState(false);
   const [showDisplay, setShowDisplay] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
   const [removing, setRemoving] = useState<Book>();
   const [refreshing, setRefreshing] = useState(false);
 
@@ -166,6 +168,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
 
         {status && <SyncPanel open={showSync} onOpenChange={setShowSync} status={status} onStatus={onStatus} />}
         <DisplaySheet open={showDisplay} onOpenChange={setShowDisplay} reading={false} />
+        {status && <AboutSheet open={showAbout} onOpenChange={setShowAbout} platform={status.platform} />}
         <ConfirmDialog
           open={!!removing}
           onOpenChange={(open) => !open && setRemoving(undefined)}
@@ -227,6 +230,12 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
             ))}
           </ul>
         )}
+        <footer className="mt-8 flex justify-center">
+          <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => setShowAbout(true)}>
+            <Info />
+            About Reader
+          </Button>
+        </footer>
       </div>
     </>
   );

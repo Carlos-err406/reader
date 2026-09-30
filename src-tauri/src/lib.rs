@@ -180,6 +180,21 @@ fn app_foreground(visible: bool, state: State<'_, AppState>) {
     }
 }
 
+fn is_github_link(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|u| u.scheme() == "https" && u.host_str() == Some("github.com") && u.username().is_empty())
+}
+
+/// Opens a page of the project on GitHub (source, license, credits) in the browser.
+/// Nothing else: the webview can't use this to open arbitrary sites.
+#[tauri::command]
+fn open_link(url: String, app: tauri::AppHandle) -> Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+    if !is_github_link(&url) {
+        bail!("Only GitHub links can be opened");
+    }
+    app.opener().open_url(url, None::<&str>).map_err(|e| Error::new(e.to_string()))
+}
+
 /// Android only: a newer GitHub release, if there is one.
 #[tauri::command]
 async fn check_apk_update() -> Result<Option<updates::Available>> {
@@ -262,6 +277,7 @@ pub fn run() {
             system_ui::set_immersive,
             check_apk_update,
             open_apk,
+            open_link,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Reader");
@@ -273,6 +289,17 @@ mod tests {
     use tauri::ipc::{CallbackFn, InvokeBody};
     use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
     use tauri::webview::InvokeRequest;
+
+    #[test]
+    fn opens_only_github_links() {
+        assert!(is_github_link("https://github.com/Carlos-err406/reader/blob/main/LICENSE"));
+        assert!(!is_github_link("http://github.com/Carlos-err406/reader"));
+        assert!(!is_github_link("https://github.com.evil.example/x"));
+        assert!(!is_github_link("https://evil.example/?github.com"));
+        assert!(!is_github_link("https://github.com@evil.example/"));
+        assert!(!is_github_link("file:///etc/passwd"));
+        assert!(!is_github_link("javascript:alert(1)"));
+    }
 
     #[test]
     fn imports_a_book_sent_as_raw_ipc_bytes() {
