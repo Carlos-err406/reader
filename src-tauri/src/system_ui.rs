@@ -35,7 +35,10 @@ pub use android::updater;
 /// itself, so the webview can't point the installer at anything else. Returns "installing"
 /// once Android's installer is open, or "permission" if Reader must be allowed to install first.
 #[tauri::command]
-pub async fn install_update(app: tauri::AppHandle) -> crate::error::Result<String> {
+pub async fn install_update(
+    app: tauri::AppHandle,
+    on_progress: tauri::ipc::Channel<serde_json::Value>,
+) -> crate::error::Result<String> {
     #[cfg(target_os = "android")]
     {
         use tauri::Manager;
@@ -46,7 +49,8 @@ pub async fn install_update(app: tauri::AppHandle) -> crate::error::Result<Strin
         let reply = tauri::async_runtime::spawn_blocking(move || {
             handle.run_mobile_plugin::<serde_json::Value>(
                 "install",
-                serde_json::json!({ "url": release.url, "sha256": release.sha256, "size": release.size, "version": release.version }),
+                // The channel serialises to its id, which the Kotlin side sends progress to.
+                serde_json::json!({ "url": release.url, "sha256": release.sha256, "size": release.size, "version": release.version, "onProgress": on_progress }),
             )
         })
         .await
@@ -56,7 +60,7 @@ pub async fn install_update(app: tauri::AppHandle) -> crate::error::Result<Strin
     }
     #[cfg(not(target_os = "android"))]
     {
-        let _ = app;
+        let _ = (app, on_progress);
         Err(crate::error::Error::new("Desktop updates install through the updater"))
     }
 }

@@ -11,6 +11,7 @@ import androidx.core.content.FileProvider
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
+import app.tauri.plugin.Channel
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
@@ -30,6 +31,7 @@ class InstallArgs {
   var sha256: String = ""
   var size: Long = 0
   var version: String = ""
+  var onProgress: Channel? = null
 }
 
 /**
@@ -126,7 +128,7 @@ class AppUpdatePlugin(private val activity: Activity) : Plugin(activity) {
                 val percent = (total * 100 / args.size).toInt()
                 if (percent != reported) {
                   reported = percent
-                  trigger("progress", JSObject().put("fraction", total.toDouble() / args.size))
+                  args.onProgress?.send(JSObject().put("fraction", total.toDouble() / args.size))
                 }
               }
             }

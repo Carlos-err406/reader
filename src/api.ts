@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, type Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type Format = "pdf" | "epub";
@@ -93,7 +93,8 @@ export const api = {
   /** Android: a newer release APK on GitHub, if any (desktop uses the Tauri updater). */
   checkApkUpdate: () => invoke<{ version: string; url: string; notes: string } | null>("check_apk_update"),
   /** Android: download, verify and install the newest release; "permission" if Reader must be allowed to install first. */
-  installUpdate: () => invoke<"installing" | "permission">("install_update"),
+  installUpdate: (onProgress: Channel<{ fraction: number }>) =>
+    invoke<"installing" | "permission">("install_update", { onProgress }),
   /** Opens a github.com page in the browser; anything else is refused. */
   openLink: (url: string) => invoke<void>("open_link", { url }),
   /** Android: hide the system bars while reading. A no-op on desktop. */

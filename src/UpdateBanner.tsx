@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Channel } from "@tauri-apps/api/core";
 import { Download, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, message } from "./api";
@@ -14,13 +15,8 @@ export interface Offer {
 
 /** Android: Reader downloads and checks the APK itself, then opens Android's installer. */
 async function installApk(progress: (fraction: number) => void): Promise<InstallResult> {
-  const { addPluginListener } = await import("@tauri-apps/api/core");
-  const listener = await addPluginListener<{ fraction: number }>("app-update", "progress", (e) => progress(e.fraction));
-  try {
-    return await api.installUpdate();
-  } finally {
-    void listener.unregister();
-  }
+  const channel = new Channel<{ fraction: number }>((e) => progress(e.fraction));
+  return api.installUpdate(channel);
 }
 
 const DISMISSED = "reader:update-dismissed";
