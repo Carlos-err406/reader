@@ -10,3 +10,4 @@ google-client.json
 *.db
 .DS_Store
 .playwright-mcp
+release-assets/

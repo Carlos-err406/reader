@@ -115,14 +115,14 @@ jobs:
         run: |
           v=${GITHUB_REF_NAME#v}
           out=src-tauri/target/universal-apple-darwin/release/bundle
-          mkdir dist
-          cp "$out"/dmg/*.dmg "dist/Reader-$v-macos-universal.dmg"
-          cp "$out/macos/Reader.app.tar.gz" "dist/Reader-$v-macos-universal.app.tar.gz"
-          cp "$out/macos/Reader.app.tar.gz.sig" "dist/Reader-$v-macos-universal.app.tar.gz.sig"
+          mkdir release-assets
+          cp "$out"/dmg/*.dmg "release-assets/Reader-$v-macos-universal.dmg"
+          cp "$out/macos/Reader.app.tar.gz" "release-assets/Reader-$v-macos-universal.app.tar.gz"
+          cp "$out/macos/Reader.app.tar.gz.sig" "release-assets/Reader-$v-macos-universal.app.tar.gz.sig"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos
-          path: dist/
+          path: release-assets/
           if-no-files-found: error
 
   android-release:
@@ -172,11 +172,11 @@ jobs:
           actual=$("$signer" verify --print-certs "$apk" | sed -n 's/.*SHA-256 digest: //p' | head -1)
           expected=$(tr -d '[:space:]' < release/android-certificate.sha256)
           [ "$actual" = "$expected" ] || { echo "APK signed by $actual, expected $expected"; exit 1; }
-          mkdir dist && cp "$apk" "dist/Reader-${GITHUB_REF_NAME#v}-android-arm64.apk"
+          mkdir release-assets && cp "$apk" "release-assets/Reader-${GITHUB_REF_NAME#v}-android-arm64.apk"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: android
-          path: dist/
+          path: release-assets/
           if-no-files-found: error
 
   publish:
