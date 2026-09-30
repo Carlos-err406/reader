@@ -169,6 +169,14 @@
   width: min(calc(100% - 2.5rem), 46rem);
   translate: -50% 0;
 }
+/* epub.js keeps only nearby chapters loaded, so its native scrollbar measures those, not the
+   book. The Scrubber shows the real position instead. */
+.epub-frame .epub-container {
+  scrollbar-width: none;
+}
+.epub-frame .epub-container::-webkit-scrollbar {
+  display: none;
+}
 .epub-frame.scroll {
   top: 0;
   bottom: 0;

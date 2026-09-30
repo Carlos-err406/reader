@@ -1,10 +1,11 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import ePub, { type Book, type Contents, type NavItem, type Rendition } from "epubjs";
 import { epubLabel } from "./format";
 import { isPageTap, type ViewerHandle, type ViewerProps } from "./viewer";
 import { stripActiveContent } from "./sanitize";
 import { attachPinch, type Focal } from "./pinch";
 import { clampSize } from "./display";
+import { Scrubber } from "./Scrubber";
 
 interface Relocated {
   start: { cfi: string; href: string; percentage: number };
@@ -95,6 +96,10 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
 ) {
   const host = useRef<HTMLDivElement>(null);
   const rendition = useRef<Rendition>(undefined);
+  const loaded = useRef<Book>(undefined);
+  // Scroll layout: where the reader is in the whole book, for the book-wide scrubber.
+  const [fraction, setFraction] = useState<number | null>(null);
+  const [scrolled, setScrolled] = useState(0);
   const move = useRef(onMove);
   move.current = onMove;
   const tap = useRef(onTap);
@@ -133,6 +138,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       ...(layout === "scroll" ? { flow: "scrolled", manager: "continuous" } : { flow: "paginated", spread: "none" }),
     });
     rendition.current = view;
+    loaded.current = book;
 
     // Pinching resizes the text live, keeping the words under the fingers where they were.
     interface Anchor {
@@ -193,6 +199,8 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
 
     // Scrolling saves only when the reader scrolled; loading and reflowing don't.
     const touched = () => (inputUntil.current = Date.now() + 1500);
+    const onScroll = () => setScrolled(Date.now());
+    element.addEventListener("scroll", onScroll, { capture: true, passive: true });
     const inputs = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
     inputs.forEach((type) => element.addEventListener(type, touched, { capture: true, passive: true }));
     view.hooks.content.register((contents: Contents) => {
@@ -232,6 +240,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       const fraction = book.locations.length() ? book.locations.percentageFromCfi(cfi) : percentage;
       const position = { location: cfi, label: epubLabel(fraction || 0, chapterOf(book, href)), fraction: fraction || 0 };
       move.current(position, unsaved);
+      setFraction(position.fraction);
       unsaved = false;
     };
     view.on("relocated", (location: Relocated) => {
@@ -308,6 +317,8 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
     return () => {
       inputs.forEach((type) => element.removeEventListener(type, touched, { capture: true }));
       element.removeEventListener("click", marginTap);
+      element.removeEventListener("scroll", onScroll, { capture: true });
+      setFraction(null);
       detachPinch();
       clearMark.current = () => {};
       rendition.current = undefined;
@@ -336,5 +347,18 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
     };
   });
 
-  return <div className={`epub-frame ${layout}`} ref={host} />;
+  // Seeking with the scrubber is the reader moving, so the new place is saved.
+  const seek = (to: number) => {
+    const book = loaded.current;
+    if (!book?.locations.length() || !rendition.current) return;
+    forced.current = true;
+    void rendition.current.display(book.locations.cfiFromPercentage(to));
+  };
+
+  return (
+    <>
+      <div className={`epub-frame ${layout}`} ref={host} />
+      {layout === "scroll" && <Scrubber fraction={fraction} onSeek={seek} activity={scrolled} />}
+    </>
+  );
 });
