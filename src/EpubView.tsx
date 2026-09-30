@@ -6,6 +6,7 @@ import { stripActiveContent } from "./sanitize";
 import { attachPinch, type Focal } from "./pinch";
 import { clampSize } from "./display";
 import { Scrubber } from "./Scrubber";
+import { LoaderCircle } from "lucide-react";
 import { fromBook, sectionSpans, toBook, type Span } from "./bookmap";
 
 interface Relocated {
@@ -100,6 +101,16 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
   // Scroll layout: where the reader is in the whole book, for the book-wide scrubber.
   const [fraction, setFraction] = useState<number | null>(null);
   const [scrolled, setScrolled] = useState(0);
+  // The scrubber asked for a place whose chapter is still loading.
+  const [seeking, setSeeking] = useState<number | null>(null);
+  // Only dim the page for loads long enough to notice; quick ones would just flicker.
+  const [slow, setSlow] = useState(false);
+  const isSeeking = seeking !== null;
+  useEffect(() => {
+    if (!isSeeking) return setSlow(false);
+    const timer = setTimeout(() => setSlow(true), 150);
+    return () => clearTimeout(timer);
+  }, [isSeeking]);
   const spans = useRef<Span[]>([]);
   // The scrubber drives the scroll position while dragging; this runs the drag inside the effect.
   const drag = useRef<(fraction: number, final: boolean) => void>(() => {});
@@ -273,12 +284,16 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       target = fromBook(spans.current, to);
       // While a chapter is loading, leave placement to the loader: placing now would be undone
       // when that load finishes and scrolls to its own chapter.
-      if (loading) return;
+      if (loading) {
+        setSeeking(to);
+        return;
+      }
       if (place()) {
         if (final) target = null;
         return;
       }
       loading = true;
+      setSeeking(to);
       void (async () => {
         while (target) {
           const wanted: Target = target;
@@ -298,6 +313,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
           break;
         }
         loading = false;
+        setSeeking(null);
         const f = liveFraction();
         if (f !== null && !dragging) setFraction(f);
       })();
@@ -427,6 +443,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       inputs.forEach((type) => element.removeEventListener(type, touched, { capture: true }));
       element.removeEventListener("click", marginTap);
       element.removeEventListener("scroll", onScroll, { capture: true });
+      setSeeking(null);
       setFraction(null);
       detachPinch();
       clearMark.current = () => {};
@@ -459,7 +476,21 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
   return (
     <>
       <div className={`epub-frame ${layout}`} ref={host} />
-      {layout === "scroll" && <Scrubber fraction={fraction} onDrag={(f, final) => drag.current(f, final)} activity={scrolled} />}
+      {slow && (
+        // The text on screen is about to be replaced: dim it and say what's happening.
+        <div className="pointer-events-none absolute inset-0 z-[5] grid place-items-center bg-card/55 backdrop-blur-[1px]">
+          <span className="flex items-center gap-2 rounded-full bg-foreground/85 px-4 py-2 text-sm font-medium text-background shadow-lg">
+            <LoaderCircle className="size-4 animate-spin" />
+            Loading…
+          </span>
+        </div>
+      )}
+      {layout === "scroll" && <Scrubber
+          fraction={fraction}
+          onDrag={(f, final) => drag.current(f, final)}
+          activity={scrolled}
+          pending={seeking}
+        />}
     </>
   );
 });

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { LoaderCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -8,6 +9,8 @@ interface Props {
   onDrag: (fraction: number, final: boolean) => void;
   /** Changes whenever the book scrolls, to show the thumb for a moment. */
   activity: number;
+  /** A chapter is loading for this position: hold the thumb there and say so. */
+  pending: number | null;
 }
 
 const THUMB = 40;
@@ -18,7 +21,7 @@ const clamp = (n: number) => Math.min(1, Math.max(0, n));
  * scrollbar would measure a few chapters, not the book. Behaves like a native one: grabbing
  * the thumb doesn't move it, clicking the track jumps there, and the page follows the drag.
  */
-export function Scrubber({ fraction, onDrag, activity }: Props) {
+export function Scrubber({ fraction, onDrag, activity, pending }: Props) {
   const track = useRef<HTMLDivElement>(null);
   const grab = useRef(THUMB / 2);
   const [drag, setDrag] = useState<number | null>(null);
@@ -32,7 +35,8 @@ export function Scrubber({ fraction, onDrag, activity }: Props) {
   }, [activity]);
 
   if (fraction === null) return null;
-  const at = drag ?? fraction;
+  const at = drag ?? pending ?? fraction;
+  const busy = pending !== null;
   const rect = () => track.current!.getBoundingClientRect();
   const toFraction = (clientY: number) => {
     const r = rect();
@@ -50,7 +54,7 @@ export function Scrubber({ fraction, onDrag, activity }: Props) {
       tabIndex={-1}
       className={cn(
         "group absolute top-16 right-0 bottom-20 z-10 w-5 cursor-pointer touch-none select-none transition-opacity duration-300",
-        visible || drag !== null ? "opacity-100" : "opacity-0 hover:opacity-100",
+        visible || drag !== null || busy ? "opacity-100" : "opacity-0 hover:opacity-100",
       )}
       onPointerDown={(e) => {
         e.preventDefault();
@@ -82,15 +86,16 @@ export function Scrubber({ fraction, onDrag, activity }: Props) {
       <div
         className={cn(
           "absolute right-1 w-1.5 rounded-full bg-muted-foreground/60 transition-[width] group-hover:w-2",
-          drag !== null && "w-2 bg-primary",
+          (drag !== null || busy) && "w-2 bg-primary",
         )}
         style={{ height: THUMB, top: `calc(${at} * (100% - ${THUMB}px))` }}
       />
-      {drag !== null && (
+      {(drag !== null || busy) && (
         <span
-          className="absolute right-5 -translate-y-1/2 rounded-full bg-foreground/85 px-2.5 py-1 text-xs font-medium whitespace-nowrap text-background tabular-nums shadow"
+          className="absolute right-5 flex -translate-y-1/2 items-center gap-1.5 rounded-full bg-foreground/85 px-2.5 py-1 text-xs font-medium whitespace-nowrap text-background tabular-nums shadow"
           style={{ top: `calc(${at} * (100% - ${THUMB}px) + ${THUMB / 2}px)` }}
         >
+          {busy && <LoaderCircle className="size-3.5 animate-spin" aria-label="Loading" />}
           {Math.round(at * 100)}%
         </span>
       )}
