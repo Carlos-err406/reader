@@ -6,6 +6,7 @@ import { stripActiveContent } from "./sanitize";
 import { attachPinch, type Focal } from "./pinch";
 import { clampSize } from "./display";
 import { Scrubber } from "./Scrubber";
+import { fromBook, sectionSpans, toBook, type Span } from "./bookmap";
 
 interface Relocated {
   start: { cfi: string; href: string; percentage: number };
@@ -96,10 +97,12 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
 ) {
   const host = useRef<HTMLDivElement>(null);
   const rendition = useRef<Rendition>(undefined);
-  const loaded = useRef<Book>(undefined);
   // Scroll layout: where the reader is in the whole book, for the book-wide scrubber.
   const [fraction, setFraction] = useState<number | null>(null);
   const [scrolled, setScrolled] = useState(0);
+  const spans = useRef<Span[]>([]);
+  // The scrubber drives the scroll position while dragging; this runs the drag inside the effect.
+  const drag = useRef<(fraction: number, final: boolean) => void>(() => {});
   const move = useRef(onMove);
   move.current = onMove;
   const tap = useRef(onTap);
@@ -152,7 +155,6 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       });
     }
     rendition.current = view;
-    loaded.current = book;
 
     // Pinching resizes the text live, keeping the words under the fingers where they were.
     interface Anchor {
@@ -213,7 +215,93 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
 
     // Scrolling saves only when the reader scrolled; loading and reflowing don't.
     const touched = () => (inputUntil.current = Date.now() + 1500);
-    const onScroll = () => setScrolled(Date.now());
+    // Where the reader is, continuously: the chapter crossing the upper third of the screen and
+    // how far into it, mapped onto the whole book.
+    interface LoadedView {
+      section: { index: number; href: string };
+      element: HTMLElement;
+    }
+    const views = () =>
+      ((view as unknown as { manager?: { views?: { all: () => LoadedView[] } } }).manager?.views?.all() ?? []);
+    const box = () => element.querySelector<HTMLElement>(".epub-container");
+    const probe = (b: HTMLElement) => b.clientHeight / 3;
+    const liveFraction = () => {
+      const b = box();
+      if (!b || !spans.current.length) return null;
+      const top = b.getBoundingClientRect().top;
+      for (const v of views()) {
+        const r = v.element.getBoundingClientRect();
+        const y = r.top - top;
+        if (y <= probe(b) && y + r.height > probe(b)) return toBook(spans.current, v.section.index, (probe(b) - y) / r.height);
+      }
+      return null;
+    };
+    let dragging = false;
+    let frame = 0;
+    const onScroll = () => {
+      setScrolled(Date.now());
+      if (dragging || frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const f = liveFraction();
+        if (f !== null) setFraction(f);
+      });
+    };
+
+    // Dragging the scrubber: scroll within loaded chapters directly (native feel); otherwise load
+    // the target chapter, then place the reader in it. Always chases the latest pointer position.
+    interface Target {
+      index: number;
+      within: number;
+    }
+    let target: Target | null = null;
+    let loading = false;
+    const place = () => {
+      const b = box();
+      const v = target && views().find((x) => x.section.index === target!.index);
+      if (!b || !v || !target) return false;
+      const r = v.element.getBoundingClientRect();
+      const y = r.top - b.getBoundingClientRect().top + b.scrollTop;
+      b.scrollTop = y + target.within * r.height - probe(b);
+      return true;
+    };
+    drag.current = (to, final) => {
+      if (!spans.current.length) return;
+      dragging = !final;
+      // A drag is the reader moving: the new place is saved.
+      inputUntil.current = Date.now() + 1500;
+      target = fromBook(spans.current, to);
+      // While a chapter is loading, leave placement to the loader: placing now would be undone
+      // when that load finishes and scrolls to its own chapter.
+      if (loading) return;
+      if (place()) {
+        if (final) target = null;
+        return;
+      }
+      loading = true;
+      void (async () => {
+        while (target) {
+          const wanted: Target = target;
+          if (!place()) {
+            const section = book.spine.get(wanted.index);
+            if (!section) break;
+            await view.display(section.href);
+            await new Promise((done) => setTimeout(done, 50));
+            inputUntil.current = Date.now() + 1500;
+            // The pointer moved on while loading: chase the newest position.
+            if (target !== wanted) continue;
+            if (!place()) break;
+          }
+          if (target !== wanted) continue;
+          // Placed. Finished if released; otherwise later moves place directly.
+          if (!dragging) target = null;
+          break;
+        }
+        loading = false;
+        const f = liveFraction();
+        if (f !== null && !dragging) setFraction(f);
+      })();
+    };
     element.addEventListener("scroll", onScroll, { capture: true, passive: true });
     const inputs = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
     inputs.forEach((type) => element.addEventListener(type, touched, { capture: true, passive: true }));
@@ -254,7 +342,10 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       const fraction = book.locations.length() ? book.locations.percentageFromCfi(cfi) : percentage;
       const position = { location: cfi, label: epubLabel(fraction || 0, chapterOf(book, href)), fraction: fraction || 0 };
       move.current(position, unsaved);
-      setFraction(position.fraction);
+      if (layout === "scroll") {
+        const f = liveFraction();
+        if (f !== null && !dragging) setFraction(f);
+      }
       unsaved = false;
     };
     view.on("relocated", (location: Relocated) => {
@@ -324,6 +415,10 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
           } catch {}
         }
         indexed = true;
+        spans.current = sectionSpans(
+          JSON.parse(book.locations.save()) as string[],
+          (book.spine as unknown as { length: number }).length,
+        );
         report(false);
       })
       .catch(onError);
@@ -361,18 +456,10 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
     };
   });
 
-  // Seeking with the scrubber is the reader moving, so the new place is saved.
-  const seek = (to: number) => {
-    const book = loaded.current;
-    if (!book?.locations.length() || !rendition.current) return;
-    forced.current = true;
-    void rendition.current.display(book.locations.cfiFromPercentage(to));
-  };
-
   return (
     <>
       <div className={`epub-frame ${layout}`} ref={host} />
-      {layout === "scroll" && <Scrubber fraction={fraction} onSeek={seek} activity={scrolled} />}
+      {layout === "scroll" && <Scrubber fraction={fraction} onDrag={(f, final) => drag.current(f, final)} activity={scrolled} />}
     </>
   );
 });

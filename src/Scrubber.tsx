@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 interface Props {
-  /** Position in the whole book, 0–1; null until the location index is ready. */
+  /** Position in the whole book, 0–1; null until the book's layout is known. */
   fraction: number | null;
-  onSeek: (fraction: number) => void;
-  /** The book is scrolling: show the thumb for a moment. */
+  /** The reader is dragging to `fraction`; `final` when the pointer is released. */
+  onDrag: (fraction: number, final: boolean) => void;
+  /** Changes whenever the book scrolls, to show the thumb for a moment. */
   activity: number;
 }
 
@@ -13,11 +14,13 @@ const THUMB = 40;
 const clamp = (n: number) => Math.min(1, Math.max(0, n));
 
 /**
- * A book-wide scrollbar for reflowable books. epub.js only keeps the chapters around the
- * reader loaded, so the native scrollbar would measure a few chapters, not the book.
+ * A scrollbar for the whole book. epub.js only keeps nearby chapters loaded, so the native
+ * scrollbar would measure a few chapters, not the book. Behaves like a native one: grabbing
+ * the thumb doesn't move it, clicking the track jumps there, and the page follows the drag.
  */
-export function Scrubber({ fraction, onSeek, activity }: Props) {
+export function Scrubber({ fraction, onDrag, activity }: Props) {
   const track = useRef<HTMLDivElement>(null);
+  const grab = useRef(THUMB / 2);
   const [drag, setDrag] = useState<number | null>(null);
   const [visible, setVisible] = useState(false);
 
@@ -30,9 +33,10 @@ export function Scrubber({ fraction, onSeek, activity }: Props) {
 
   if (fraction === null) return null;
   const at = drag ?? fraction;
-  const position = (clientY: number) => {
-    const rect = track.current!.getBoundingClientRect();
-    return clamp((clientY - rect.top - THUMB / 2) / (rect.height - THUMB));
+  const rect = () => track.current!.getBoundingClientRect();
+  const toFraction = (clientY: number) => {
+    const r = rect();
+    return clamp((clientY - r.top - grab.current) / (r.height - THUMB));
   };
 
   return (
@@ -49,15 +53,31 @@ export function Scrubber({ fraction, onSeek, activity }: Props) {
         visible || drag !== null ? "opacity-100" : "opacity-0 hover:opacity-100",
       )}
       onPointerDown={(e) => {
+        e.preventDefault();
         e.currentTarget.setPointerCapture(e.pointerId);
-        setDrag(position(e.clientY));
+        const r = rect();
+        const top = at * (r.height - THUMB);
+        const y = e.clientY - r.top;
+        // On the thumb: keep it under the pointer. On the track: centre it there and jump.
+        grab.current = y >= top && y <= top + THUMB ? y - top : THUMB / 2;
+        const f = toFraction(e.clientY);
+        setDrag(f);
+        onDrag(f, false);
       }}
-      onPointerMove={(e) => drag !== null && setDrag(position(e.clientY))}
+      onPointerMove={(e) => {
+        if (drag === null) return;
+        const f = toFraction(e.clientY);
+        setDrag(f);
+        onDrag(f, false);
+      }}
       onPointerUp={() => {
-        if (drag !== null) onSeek(drag);
+        if (drag !== null) onDrag(drag, true);
         setDrag(null);
       }}
-      onPointerCancel={() => setDrag(null)}
+      onPointerCancel={() => {
+        if (drag !== null) onDrag(drag, true);
+        setDrag(null);
+      }}
     >
       <div
         className={cn(
