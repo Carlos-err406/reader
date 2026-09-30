@@ -177,6 +177,11 @@
 .epub-frame .epub-container::-webkit-scrollbar {
   display: none;
 }
+/* Each epub.js rendition lives in a stage; a far seek loads into a hidden one, then swaps. */
+.epub-stage {
+  position: absolute;
+  inset: 0;
+}
 .epub-frame.scroll {
   top: 0;
   bottom: 0;

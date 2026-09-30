@@ -144,28 +144,27 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
     const element = host.current;
     const book = ePub(data.slice(0));
     book.spine.hooks.content.register((doc: Document) => stripActiveContent(doc));
-    const view = book.renderTo(element, {
-      width: "100%",
-      height: "100%",
-      // Needed for WebKit to deliver events into chapters; book scripts are stripped instead.
-      allowScriptedContent: true,
-      ...(layout === "scroll"
-        ? // Load neighbouring chapters two screens ahead, so they're in place before the reader
-          // gets there instead of being inserted (and scroll-corrected) right at the edge.
-          { flow: "scrolled", manager: "continuous", offset: Math.max(1500, element.clientHeight * 2) }
-        : { flow: "paginated", spread: "none" }),
-    });
-    if (layout === "scroll") {
-      // epub.js trims chapters out of view and re-inserts them when the reader comes back, each
-      // time correcting the scroll from code. With many short sections (front matter, image pages)
-      // that churn fights trackpad momentum and the page lurches. Keep what's loaded for the
-      // session; a jump (scrubber, bookmark, another device) resets the loaded chapters anyway.
-      void view.started.then(() => {
-        const manager = (view as unknown as { manager?: { trim: () => Promise<void> } }).manager;
-        if (manager) manager.trim = () => Promise.resolve();
-      });
+
+    // A stage is one epub.js rendition in its own layer. Far seeks render into a hidden stage
+    // while the visible one stays usable, then swap: the page is never blank, a newer seek or
+    // the reader scrolling simply discards the hidden one, and a load that epub.js never
+    // finishes can't block anything after it.
+    interface LoadedView {
+      section: { index: number; href: string };
+      element: HTMLElement;
     }
-    rendition.current = view;
+    interface Stage {
+      view: Rendition;
+      layer: HTMLDivElement;
+      index?: number;
+      destroy: () => void;
+    }
+    let active: Stage;
+    let pending: Stage | null = null;
+    const views = (stage: Stage) =>
+      ((stage.view as unknown as { manager?: { views?: { all: () => LoadedView[] } } }).manager?.views?.all() ?? []);
+    const box = (stage: Stage) => stage.layer.querySelector<HTMLElement>(".epub-container");
+    const probe = (b: HTMLElement) => b.clientHeight / 3;
 
     // Pinching resizes the text live, keeping the words under the fingers where they were.
     interface Anchor {
@@ -176,8 +175,8 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
     }
     const top = (a: Anchor) => a.range.getBoundingClientRect().top + (a.frame?.getBoundingClientRect().top ?? 0);
     const reanchor = (a: Anchor | undefined) => {
-      const box = element.querySelector<HTMLElement>(".epub-container");
-      if (a && box) box.scrollTop += top(a) - a.y;
+      const b = box(active);
+      if (a && b) b.scrollTop += top(a) - a.y;
     };
     const anchorAt = (doc: Document | null, at: Focal): Anchor | undefined => {
       if (!doc) return undefined;
@@ -189,7 +188,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
         range = doc.createRange();
         range.setStart(position.offsetNode, position.offset);
       }
-      const contents = (view.getContents() as unknown as Contents[]).find((c) => c.document === doc);
+      const contents = (active.view.getContents() as unknown as Contents[]).find((c) => c.document === doc);
       const anchor: Anchor = { range, frame: doc.defaultView?.frameElement ?? null, y: 0 };
       anchor.y = top(anchor);
       try {
@@ -198,7 +197,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       return anchor;
     };
     let live: { base: number; size: number; anchor?: Anchor } | null = null;
-    let pending = 0;
+    let pinchFrame = 0;
     const pinchInto = (doc: Document | null) => ({
       onChange: (scale: number, at: Focal) => {
         live ??= { base: size.current, size: size.current, anchor: anchorAt(doc, at) };
@@ -207,9 +206,9 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
         live.size = next;
         sizeChanged.current(next, false);
         const anchor = live.anchor;
-        cancelAnimationFrame(pending);
-        pending = requestAnimationFrame(() => {
-          (view.getContents() as unknown as Contents[]).forEach((c) => applyLook(c.document, styleFor.current(next)));
+        cancelAnimationFrame(pinchFrame);
+        pinchFrame = requestAnimationFrame(() => {
+          (active.view.getContents() as unknown as Contents[]).forEach((c) => applyLook(c.document, styleFor.current(next)));
           if (layout === "scroll") requestAnimationFrame(() => reanchor(anchor));
         });
       },
@@ -220,29 +219,19 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
         sizeChanged.current(final, true);
         // Chapters finish resizing a little later; pin the spot again as they do.
         if (layout === "scroll") [80, 250, 600].forEach((ms) => setTimeout(() => reanchor(anchor), ms));
-        else if (anchor?.cfi) setTimeout(() => void view.display(anchor.cfi), 80);
+        else if (anchor?.cfi) setTimeout(() => void active.view.display(anchor.cfi), 80);
       },
     });
 
-    // Scrolling saves only when the reader scrolled; loading and reflowing don't.
-    const touched = () => (inputUntil.current = Date.now() + 1500);
     // Where the reader is, continuously: the chapter crossing the upper third of the screen and
     // how far into it, mapped onto the whole book.
-    interface LoadedView {
-      section: { index: number; href: string };
-      element: HTMLElement;
-    }
-    const views = () =>
-      ((view as unknown as { manager?: { views?: { all: () => LoadedView[] } } }).manager?.views?.all() ?? []);
-    const box = () => element.querySelector<HTMLElement>(".epub-container");
-    const probe = (b: HTMLElement) => b.clientHeight / 3;
     const liveFraction = () => {
-      const b = box();
+      const b = box(active);
       if (!b || !spans.current.length) return null;
-      const top = b.getBoundingClientRect().top;
-      for (const v of views()) {
+      const y0 = b.getBoundingClientRect().top;
+      for (const v of views(active)) {
         const r = v.element.getBoundingClientRect();
-        const y = r.top - top;
+        const y = r.top - y0;
         if (y <= probe(b) && y + r.height > probe(b)) return toBook(spans.current, v.section.index, (probe(b) - y) / r.height);
       }
       return null;
@@ -258,93 +247,6 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
         if (f !== null) setFraction(f);
       });
     };
-
-    // Dragging the scrubber: scroll within loaded chapters directly (native feel); otherwise load
-    // the target chapter, then place the reader in it. Always chases the latest pointer position.
-    interface Target {
-      index: number;
-      within: number;
-    }
-    let target: Target | null = null;
-    let loading = false;
-    const place = () => {
-      const b = box();
-      const v = target && views().find((x) => x.section.index === target!.index);
-      if (!b || !v || !target) return false;
-      const r = v.element.getBoundingClientRect();
-      const y = r.top - b.getBoundingClientRect().top + b.scrollTop;
-      b.scrollTop = y + target.within * r.height - probe(b);
-      return true;
-    };
-    drag.current = (to, final) => {
-      if (!spans.current.length) return;
-      dragging = !final;
-      // A drag is the reader moving: the new place is saved.
-      inputUntil.current = Date.now() + 1500;
-      target = fromBook(spans.current, to);
-      // While a chapter is loading, leave placement to the loader: placing now would be undone
-      // when that load finishes and scrolls to its own chapter.
-      if (loading) {
-        setSeeking(to);
-        return;
-      }
-      if (place()) {
-        if (final) target = null;
-        return;
-      }
-      loading = true;
-      setSeeking(to);
-      void (async () => {
-        while (target) {
-          const wanted: Target = target;
-          if (!place()) {
-            const section = book.spine.get(wanted.index);
-            if (!section) break;
-            await view.display(section.href);
-            await new Promise((done) => setTimeout(done, 50));
-            inputUntil.current = Date.now() + 1500;
-            // The pointer moved on while loading: chase the newest position.
-            if (target !== wanted) continue;
-            if (!place()) break;
-          }
-          if (target !== wanted) continue;
-          // Placed. Finished if released; otherwise later moves place directly.
-          if (!dragging) target = null;
-          break;
-        }
-        loading = false;
-        setSeeking(null);
-        const f = liveFraction();
-        if (f !== null && !dragging) setFraction(f);
-      })();
-    };
-    element.addEventListener("scroll", onScroll, { capture: true, passive: true });
-    const inputs = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
-    inputs.forEach((type) => element.addEventListener(type, touched, { capture: true, passive: true }));
-    view.hooks.content.register((contents: Contents) => {
-      applyLook(contents.document, look.current);
-      // Justified text hyphenates by language; some books only declare it in their metadata.
-      const html = contents.document.documentElement;
-      const language = book.packaging?.metadata?.language;
-      if (!html.lang && !html.getAttribute("xml:lang") && language) html.lang = language;
-      inputs.forEach((type) => contents.document.addEventListener(type, touched, { passive: true }));
-      // Pinching a reflowable book changes its text size.
-      attachPinch(contents.document, pinchInto(contents.document));
-      // Focus moves into the chapter on click, so pass keys on to the reader's shortcuts.
-      contents.document.addEventListener("keydown", (e) => {
-        const copy = new KeyboardEvent("keydown", {
-          key: e.key,
-          code: e.code,
-          ctrlKey: e.ctrlKey,
-          metaKey: e.metaKey,
-          shiftKey: e.shiftKey,
-          altKey: e.altKey,
-          cancelable: true,
-        });
-        window.dispatchEvent(copy);
-        if (copy.defaultPrevented) e.preventDefault();
-      });
-    });
 
     // Percentages come from a location index. Until it exists epub.js reports 0%, and saving
     // that would overwrite the synced progress, so positions are held back until it's ready.
@@ -364,57 +266,215 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       }
       unsaved = false;
     };
-    view.on("relocated", (location: Relocated) => {
-      last = location;
-      shown.current = location.start.cfi;
-      const save = forced.current ?? Date.now() < inputUntil.current;
-      forced.current = null;
-      // The reader moved on from the highlighted spot.
-      if (save) {
-        clearMark.current();
-        clearMark.current = () => {};
-      }
-      report(save);
-    });
 
-    // Taps inside the chapter arrive from its iframe; taps in the margins hit the host.
-    view.on("click", (e: MouseEvent) => isPageTap(e) && tap.current());
-    const marginTap = (e: MouseEvent) => e.target === element && tap.current();
+    // Seeking: a hidden stage loads the target chapter, then replaces the visible one.
+    interface Target {
+      index: number;
+      within: number;
+    }
+    let target: Target | null = null;
+    let schedule: ReturnType<typeof setTimeout> | undefined;
+    const placeIn = (stage: Stage, t: Target) => {
+      const b = box(stage);
+      const v = views(stage).find((x) => x.section.index === t.index);
+      if (!b || !v) return false;
+      const r = v.element.getBoundingClientRect();
+      const y = r.top - b.getBoundingClientRect().top + b.scrollTop;
+      b.scrollTop = y + t.within * r.height - probe(b);
+      return true;
+    };
+    const dropPending = () => {
+      clearTimeout(schedule);
+      pending?.destroy();
+      pending = null;
+      setSeeking(null);
+    };
+    const swapIn = (stage: Stage) => {
+      const old = active;
+      active = stage;
+      pending = null;
+      rendition.current = stage.view;
+      stage.layer.style.visibility = "";
+      old.destroy();
+      setSeeking(null);
+      // Report the new place as the reader's own move, so it's saved.
+      forced.current = true;
+      (stage.view as unknown as { reportLocation: () => void }).reportLocation();
+      const f = liveFraction();
+      if (f !== null && !dragging) setFraction(f);
+    };
+    const loadInBackground = (t: Target) => {
+      pending?.destroy();
+      const stage = mountStage(true);
+      stage.index = t.index;
+      pending = stage;
+      const section = book.spine.get(t.index);
+      if (!section) return dropPending();
+      // epub.js can leave a display unfinished; don't wait on it forever.
+      const giveUp = setTimeout(() => pending === stage && dropPending(), 15000);
+      void stage.view
+        .display(section.href)
+        .then(() => new Promise((done) => setTimeout(done, 50)))
+        .then(() => {
+          clearTimeout(giveUp);
+          if (pending !== stage) return;
+          placeIn(stage, target && target.index === stage.index ? target : t);
+          if (!dragging) target = null;
+          swapIn(stage);
+        })
+        .catch(() => pending === stage && dropPending());
+    };
+    drag.current = (to, final) => {
+      if (!spans.current.length) return;
+      dragging = !final;
+      // A drag is the reader moving: the new place is saved.
+      inputUntil.current = Date.now() + 1500;
+      const t = fromBook(spans.current, to);
+      target = t;
+      // In chapters already on screen the page follows the pointer directly. Dragging back
+      // into them also cancels a load that's no longer wanted.
+      if (placeIn(active, t)) {
+        if (pending) dropPending();
+        if (final) target = null;
+        return;
+      }
+      setSeeking(to);
+      if (pending?.index === t.index) return;
+      // Further away: load when the pointer pauses or lets go, not for every chapter it passes.
+      clearTimeout(schedule);
+      schedule = setTimeout(() => target && loadInBackground(target), final ? 0 : 180);
+    };
+
+    // Scrolling saves only when the reader scrolled; loading and reflowing don't. Scrolling the
+    // visible page while a seek is loading means the reader changed their mind: cancel it.
+    const touched = () => {
+      inputUntil.current = Date.now() + 1500;
+      if (pending && !dragging) {
+        target = null;
+        dropPending();
+      }
+    };
+    const inputs = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
+
+    const mountStage = (hidden: boolean): Stage => {
+      const layer = document.createElement("div");
+      layer.className = "epub-stage";
+      if (hidden) layer.style.visibility = "hidden";
+      element.appendChild(layer);
+      const view = book.renderTo(layer, {
+        width: "100%",
+        height: "100%",
+        // Needed for WebKit to deliver events into chapters; book scripts are stripped instead.
+        allowScriptedContent: true,
+        ...(layout === "scroll"
+          ? // Load neighbouring chapters two screens ahead, so they're in place before the reader
+            // gets there instead of being inserted (and scroll-corrected) right at the edge.
+            { flow: "scrolled", manager: "continuous", offset: Math.max(1500, element.clientHeight * 2) }
+          : { flow: "paginated", spread: "none" }),
+      });
+      const stage: Stage = {
+        view,
+        layer,
+        destroy: () => {
+          try {
+            view.destroy();
+          } catch {}
+          layer.remove();
+        },
+      };
+      if (layout === "scroll") {
+        // epub.js trims chapters out of view and re-inserts them when the reader comes back,
+        // each time correcting the scroll from code. With many short sections that churn
+        // fights trackpad momentum and the page lurches. Keep what's loaded for the session.
+        void view.started.then(() => {
+          const manager = (view as unknown as { manager?: { trim: () => Promise<void> } }).manager;
+          if (manager) manager.trim = () => Promise.resolve();
+        });
+      }
+      view.hooks.content.register((contents: Contents) => {
+        applyLook(contents.document, look.current);
+        // Justified text hyphenates by language; some books only declare it in their metadata.
+        const html = contents.document.documentElement;
+        const language = book.packaging?.metadata?.language;
+        if (!html.lang && !html.getAttribute("xml:lang") && language) html.lang = language;
+        inputs.forEach((type) => contents.document.addEventListener(type, () => stage === active && touched(), { passive: true }));
+        // Pinching a reflowable book changes its text size.
+        attachPinch(contents.document, pinchInto(contents.document));
+        // Focus moves into the chapter on click, so pass keys on to the reader's shortcuts.
+        contents.document.addEventListener("keydown", (e) => {
+          const copy = new KeyboardEvent("keydown", {
+            key: e.key,
+            code: e.code,
+            ctrlKey: e.ctrlKey,
+            metaKey: e.metaKey,
+            shiftKey: e.shiftKey,
+            altKey: e.altKey,
+            cancelable: true,
+          });
+          window.dispatchEvent(copy);
+          if (copy.defaultPrevented) e.preventDefault();
+        });
+      });
+      view.on("relocated", (location: Relocated) => {
+        // A hidden stage is still loading; it reports once it's shown.
+        if (stage !== active) return;
+        last = location;
+        shown.current = location.start.cfi;
+        const save = forced.current ?? Date.now() < inputUntil.current;
+        forced.current = null;
+        // The reader moved on from the highlighted spot.
+        if (save) {
+          clearMark.current();
+          clearMark.current = () => {};
+        }
+        report(save);
+      });
+      // Taps inside the chapter arrive from its iframe.
+      view.on("click", (e: MouseEvent) => stage === active && isPageTap(e) && tap.current());
+      if (layout === "pages") {
+        const turn = (forward: boolean) => {
+          forced.current = true;
+          void (forward ? view.next() : view.prev());
+        };
+        // Swipes arrive from inside the book's iframe.
+        let startX = 0;
+        let pinching = false;
+        view.on("touchstart", (e: TouchEvent) => {
+          if (e.touches.length > 1) pinching = true;
+          else if (!pinching) startX = e.changedTouches[0]?.clientX ?? 0;
+        });
+        view.on("touchend", (e: TouchEvent) => {
+          // A pinch isn't a swipe; wait for every finger to lift before listening again.
+          if (pinching) {
+            if (e.touches.length === 0) pinching = false;
+            return;
+          }
+          const dx = (e.changedTouches[0]?.clientX ?? 0) - startX;
+          if (Math.abs(dx) > 50) turn(dx < 0);
+        });
+      }
+      return stage;
+    };
+
+    active = mountStage(false);
+    rendition.current = active.view;
+    element.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    inputs.forEach((type) => element.addEventListener(type, touched, { capture: true, passive: true }));
+    // Taps in the margins hit the host rather than a chapter.
+    const marginTap = (e: MouseEvent) => (e.target === element || (e.target as Element).classList?.contains("epub-stage")) && tap.current();
     element.addEventListener("click", marginTap);
     const detachPinch = attachPinch(element, pinchInto(null));
-
-    if (layout === "pages") {
-      const turn = (forward: boolean) => {
-        forced.current = true;
-        void (forward ? view.next() : view.prev());
-      };
-      // Swipe and arrow keys arrive from inside the book's iframe.
-      let startX = 0;
-      let pinching = false;
-      view.on("touchstart", (e: TouchEvent) => {
-        if (e.touches.length > 1) pinching = true;
-        else if (!pinching) startX = e.changedTouches[0]?.clientX ?? 0;
-      });
-      view.on("touchend", (e: TouchEvent) => {
-        // A pinch isn't a swipe; wait for every finger to lift before listening again.
-        if (pinching) {
-          if (e.touches.length === 0) pinching = false;
-          return;
-        }
-        const dx = (e.changedTouches[0]?.clientX ?? 0) - startX;
-        if (Math.abs(dx) > 50) turn(dx < 0);
-      });
-    }
 
     // The first open marks the synced spot; a layout switch just returns to where the reader was.
     const start = shown.current;
     const first = !opened.current;
     opened.current = true;
     forced.current = false;
-    view
+    const opening = active;
+    opening.view
       .display(start || undefined)
-      .then(() => first && initial && mark(view, initial))
-      .catch(() => view.display())
+      .then(() => first && initial && mark(opening.view, initial))
+      .catch(() => opening.view.display())
       .catch(onError);
     // Building the index takes a few seconds on a long book, so it's cached per device.
     book.ready
@@ -443,12 +503,17 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       inputs.forEach((type) => element.removeEventListener(type, touched, { capture: true }));
       element.removeEventListener("click", marginTap);
       element.removeEventListener("scroll", onScroll, { capture: true });
+      clearTimeout(schedule);
       setSeeking(null);
       setFraction(null);
       detachPinch();
       clearMark.current = () => {};
       rendition.current = undefined;
-      book.destroy();
+      pending?.destroy();
+      active.destroy();
+      try {
+        book.destroy();
+      } catch {}
     };
     // The book loads once per layout; later locations go through goTo.
   }, [data, layout]);
