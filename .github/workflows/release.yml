@@ -106,17 +106,27 @@ jobs:
           [ -n "$secret" ] && echo "::add-mask::$secret"
           echo "READER_GOOGLE_CLIENT_ID=$id" >> "$GITHUB_ENV"
           echo "READER_GOOGLE_CLIENT_SECRET=$secret" >> "$GITHUB_ENV"
-      - name: Build universal app, dmg and signed updater bundle
+      - name: Build universal app and signed updater bundle
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build --target universal-apple-darwin --bundles app,dmg
-      - name: Collect
+        run: pnpm tauri build --target universal-apple-darwin --bundles app
+      - name: Collect, with a drag-to-Applications dmg
+        # Tauri's bundle_dmg.sh scripts Finder to style the window, which fails on hosted runners;
+        # hdiutil alone is reliable (retried for the runners' occasional "Resource busy").
         run: |
           v=${GITHUB_REF_NAME#v}
           out=src-tauri/target/universal-apple-darwin/release/bundle
           mkdir release-assets
-          cp "$out"/dmg/*.dmg "release-assets/Reader-$v-macos-universal.dmg"
+          stage=$(mktemp -d)
+          cp -R "$out/macos/Reader.app" "$stage/"
+          ln -s /Applications "$stage/Applications"
+          for attempt in 1 2 3; do
+            hdiutil create -volname Reader -srcfolder "$stage" -ov -format UDZO "release-assets/Reader-$v-macos-universal.dmg" && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 10
+          done
+          hdiutil verify "release-assets/Reader-$v-macos-universal.dmg"
           cp "$out/macos/Reader.app.tar.gz" "release-assets/Reader-$v-macos-universal.app.tar.gz"
           cp "$out/macos/Reader.app.tar.gz.sig" "release-assets/Reader-$v-macos-universal.app.tar.gz.sig"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
