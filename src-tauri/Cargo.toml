@@ -1,6 +1,6 @@
 [package]
 name = "reader"
-version = "0.1.1"
+version = "0.1.2"
 description = "A reader that keeps your place across desktop and Android"
 edition = "2021"
 license = "MIT"
