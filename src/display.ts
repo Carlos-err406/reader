@@ -208,5 +208,11 @@ ${
 body * { color: inherit !important; background-color: transparent !important; border-color: ${p.line} !important; }
 a, a * { color: ${p.accent} !important; }
 ${font ? `body, body *:not(code):not(pre):not(kbd):not(samp) { font-family: ${font} !important; }` : ""}
+${
+  // Scroll layout: chapters span the window (so the margins scroll too); keep a readable column.
+  display.layout === "scroll"
+    ? "body { max-width: 46rem !important; margin-left: auto !important; margin-right: auto !important; padding-left: 1.25rem !important; padding-right: 1.25rem !important; box-sizing: border-box !important; }"
+    : ""
+}
 `;
 }

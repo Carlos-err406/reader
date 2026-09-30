@@ -182,10 +182,17 @@
   position: absolute;
   inset: 0;
 }
+/* In scroll layout the scrolling area spans the whole window, so the wheel and swipes work over
+   the margins too; the text column is centred inside each chapter (display.ts). */
 .epub-frame.scroll {
   top: 0;
   bottom: 0;
-  width: min(100%, 48rem);
+  width: 100%;
+}
+/* Room after the last chapter, so the ending can be scrolled up clear of the progress bar. */
+.epub-frame.scroll .epub-container {
+  padding-bottom: 30vh !important;
+  box-sizing: border-box;
 }
 /* Zoomed pages scroll in both directions; at "fit" they stay centred. */
 .pdf-frame {

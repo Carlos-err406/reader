@@ -33,6 +33,11 @@ describe("display settings", () => {
     expect(css({ align: "book" })).not.toContain("text-align");
   });
 
+  it("centres a readable column only in scroll layout", () => {
+    expect(css({ layout: "scroll" })).toContain("max-width: 46rem");
+    expect(css({ layout: "pages" })).not.toContain("max-width");
+  });
+
   it("keeps the book's fonts when asked", () => {
     expect(css({ font: "original" })).not.toContain("font-family");
     expect(css({ font: "hyperlegible" })).toContain('font-family: "Atkinson Hyperlegible"');
