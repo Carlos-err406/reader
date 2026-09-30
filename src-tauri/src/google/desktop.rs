@@ -13,8 +13,6 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-const KEYCHAIN_SERVICE: &str = "org.reader.books.google";
-const KEYCHAIN_ACCOUNT: &str = "drive";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Client {
@@ -76,9 +74,6 @@ struct TokenResponse {
     refresh_token: Option<String>,
 }
 
-fn entry() -> Result<keyring::Entry> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT).map_err(|_| Error::new("Keychain is unavailable"))
-}
 
 fn random(bytes: usize) -> String {
     let mut buffer = vec![0u8; bytes];
@@ -136,11 +131,7 @@ impl Platform {
         if let Some(token) = cache.as_ref() {
             return Ok(token.clone());
         }
-        let token = match entry()?.get_password() {
-            Ok(token) => Some(token),
-            Err(keyring::Error::NoEntry) => None,
-            Err(_) => bail!("Could not read Google credentials from the keychain"),
-        };
+        let token = super::keychain::read()?;
         *cache = Some(token.clone());
         Ok(token)
     }
@@ -238,7 +229,7 @@ impl Platform {
         let Some(refresh) = tokens.refresh_token else {
             bail!("Google did not return an offline grant. Reconnect and allow access.");
         };
-        entry()?.set_password(&refresh).map_err(|_| Error::new("Could not save Google credentials in the keychain"))?;
+        super::keychain::write(&refresh)?;
         *self.refresh_token.lock().unwrap_or_else(|e| e.into_inner()) = Some(Some(refresh));
         Ok((tokens.access_token, Duration::from_secs(tokens.expires_in)))
     }
@@ -252,10 +243,7 @@ impl Platform {
     pub async fn revoke_cached(&self, _token: &str) {}
 
     pub async fn disconnect(&self) -> Result<()> {
-        match entry()?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(_) => bail!("Could not remove Google credentials from the keychain"),
-        }
+        super::keychain::remove()?;
         *self.refresh_token.lock().unwrap_or_else(|e| e.into_inner()) = Some(None);
         Ok(())
     }

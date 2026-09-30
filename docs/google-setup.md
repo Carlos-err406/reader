@@ -9,7 +9,7 @@ Reader works offline without Google. Sync needs one Google Cloud project with tw
    - point `READER_GOOGLE_CLIENT_JSON=/absolute/path.json` at it when you run `pnpm desktop`, or
    - bake it into a release build: `READER_GOOGLE_CLIENT_ID=… READER_GOOGLE_CLIENT_SECRET=… pnpm build:desktop`.
 
-   Never commit the JSON (`google-client.json` is gitignored). Desktop "secrets" are public identifiers under Google's installed-app model. The refresh token is stored in the macOS keychain (`org.reader.books.google`).
+   Never commit the JSON (`google-client.json` is gitignored). Desktop "secrets" are public identifiers under Google's installed-app model. The refresh token is stored in the macOS keychain as `org.reader.books.drive`, created through `/usr/bin/security` so ad-hoc-signed rebuilds and updates don't ask for the keychain password again (see `src-tauri/src/google/keychain.rs`).
 4. **Android client:** create an OAuth client of type **Android** with package name `org.reader.books` and the SHA-1 of the certificate that signs the APK:
 
    ```sh
