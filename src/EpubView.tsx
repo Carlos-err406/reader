@@ -135,8 +135,22 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       height: "100%",
       // Needed for WebKit to deliver events into chapters; book scripts are stripped instead.
       allowScriptedContent: true,
-      ...(layout === "scroll" ? { flow: "scrolled", manager: "continuous" } : { flow: "paginated", spread: "none" }),
+      ...(layout === "scroll"
+        ? // Load neighbouring chapters two screens ahead, so they're in place before the reader
+          // gets there instead of being inserted (and scroll-corrected) right at the edge.
+          { flow: "scrolled", manager: "continuous", offset: Math.max(1500, element.clientHeight * 2) }
+        : { flow: "paginated", spread: "none" }),
     });
+    if (layout === "scroll") {
+      // epub.js trims chapters out of view and re-inserts them when the reader comes back, each
+      // time correcting the scroll from code. With many short sections (front matter, image pages)
+      // that churn fights trackpad momentum and the page lurches. Keep what's loaded for the
+      // session; a jump (scrubber, bookmark, another device) resets the loaded chapters anyway.
+      void view.started.then(() => {
+        const manager = (view as unknown as { manager?: { trim: () => Promise<void> } }).manager;
+        if (manager) manager.trim = () => Promise.resolve();
+      });
+    }
     rendition.current = view;
     loaded.current = book;
 
