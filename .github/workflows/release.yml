@@ -1,0 +1,204 @@
+name: Release
+
+# Pull requests and main get checks. A vX.Y.Z tag on a commit in main additionally builds the
+# signed macOS and Android packages, uploads them to a draft release, verifies the uploads and
+# only then publishes it. Secrets are used only by the tag jobs.
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NDK_VERSION: 27.3.13750724
+
+jobs:
+  checks:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: pnpm install --frozen-lockfile
+      - name: Versions and release notes
+        run: node scripts/check-release.mjs ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+      - name: Tags must be on main
+        if: startsWith(github.ref, 'refs/tags/')
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - run: pnpm typecheck
+      - run: pnpm vitest run
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - run: pnpm build
+
+  android-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager "ndk;${NDK_VERSION}"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: pnpm install --frozen-lockfile
+      - name: Debug APK (no signing secrets)
+        run: pnpm tauri android build --apk --debug --target aarch64
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+
+  macos-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [checks, android-check]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: pnpm install --frozen-lockfile
+      - name: Desktop OAuth client (public app identity only)
+        env:
+          CLIENT_JSON: ${{ secrets.READER_GOOGLE_DESKTOP_CLIENT_JSON }}
+        run: |
+          id=$(jq -er '.installed.client_id' <<< "$CLIENT_JSON")
+          secret=$(jq -r '.installed.client_secret // empty' <<< "$CLIENT_JSON")
+          [ -n "$secret" ] && echo "::add-mask::$secret"
+          echo "READER_GOOGLE_CLIENT_ID=$id" >> "$GITHUB_ENV"
+          echo "READER_GOOGLE_CLIENT_SECRET=$secret" >> "$GITHUB_ENV"
+      - name: Build universal app, dmg and signed updater bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --target universal-apple-darwin --bundles app,dmg
+      - name: Collect
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          out=src-tauri/target/universal-apple-darwin/release/bundle
+          mkdir dist
+          cp "$out"/dmg/*.dmg "dist/Reader-$v-macos-universal.dmg"
+          cp "$out/macos/Reader.app.tar.gz" "dist/Reader-$v-macos-universal.app.tar.gz"
+          cp "$out/macos/Reader.app.tar.gz.sig" "dist/Reader-$v-macos-universal.app.tar.gz.sig"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/
+          if-no-files-found: error
+
+  android-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [checks, android-check]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager "ndk;${NDK_VERSION}" "build-tools;35.0.0"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: pnpm install --frozen-lockfile
+      - name: Signed release APK
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+          KEYSTORE_BASE64: ${{ secrets.READER_ANDROID_KEYSTORE_BASE64 }}
+          READER_ANDROID_STORE_PASSWORD: ${{ secrets.READER_ANDROID_STORE_PASSWORD }}
+          READER_ANDROID_KEY_PASSWORD: ${{ secrets.READER_ANDROID_KEY_PASSWORD }}
+          READER_ANDROID_KEY_ALIAS: reader
+        run: |
+          export READER_ANDROID_KEYSTORE="$RUNNER_TEMP/release.jks"
+          trap 'rm -f "$READER_ANDROID_KEYSTORE"' EXIT
+          base64 -d <<< "$KEYSTORE_BASE64" > "$READER_ANDROID_KEYSTORE"
+          pnpm tauri android build --apk --target aarch64
+      - name: Verify the signing certificate
+        run: |
+          apk=$(ls src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk)
+          signer="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          "$signer" verify "$apk"
+          actual=$("$signer" verify --print-certs "$apk" | sed -n 's/.*SHA-256 digest: //p' | head -1)
+          expected=$(tr -d '[:space:]' < release/android-certificate.sha256)
+          [ "$actual" = "$expected" ] || { echo "APK signed by $actual, expected $expected"; exit 1; }
+          mkdir dist && cp "$apk" "dist/Reader-${GITHUB_REF_NAME#v}-android-arm64.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [macos-release, android-release]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums and updater manifest
+        run: |
+          node scripts/latest-json.mjs "${TAG#v}" dist dist/latest.json
+          (cd dist && for f in *.dmg *.apk *.app.tar.gz; do sha256sum "$f" > "$f.sha256"; done)
+          ls -l dist
+      - name: Upload to a draft
+        run: |
+          if gh release view "$TAG" --json isDraft -q '.isDraft' 2>/dev/null | grep -q false; then
+            echo "$TAG is already published; publish a new version instead of replacing assets."; exit 1
+          fi
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --verify-tag --title "Reader ${TAG#v}" --notes-file "docs/releases/${TAG#v}.md"
+          gh release upload "$TAG" dist/* --clobber
+      - name: Verify uploads, then publish
+        run: |
+          mkdir check
+          gh release download "$TAG" --dir check
+          for f in dist/*; do cmp "$f" "check/$(basename "$f")" || { echo "Upload of $(basename "$f") differs"; exit 1; }; done
+          gh release edit "$TAG" --draft=false --latest

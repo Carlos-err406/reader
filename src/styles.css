@@ -1,0 +1,222 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* The Appearance setting (not just the OS) decides dark mode; applyChrome sets data-theme. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
+ * Skins set the base colours below at runtime (display.ts → applyChrome). These values are
+ * the Paper skin, used until the settings load. Surface tints derive from the base colours.
+ */
+:root {
+  --background: #f6f2ea;
+  --card: #fbf8f2;
+  --foreground: #1d1b18;
+  --muted-foreground: #6d665c;
+  --border: #e2dacb;
+  --primary: #1f3a5f;
+  --primary-foreground: #ffffff;
+  --warm: #e0703a;
+  --ok: #3f8f5a;
+  --warn: #c2882a;
+  --destructive: #b3412e;
+  --radius: 0.75rem;
+
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --secondary: color-mix(in srgb, var(--foreground) 7%, var(--card));
+  --secondary-foreground: var(--foreground);
+  --muted: color-mix(in srgb, var(--foreground) 5%, var(--card));
+  --accent: color-mix(in srgb, var(--foreground) 8%, var(--card));
+  --accent-foreground: var(--foreground);
+  --input: var(--border);
+  --ring: color-mix(in srgb, var(--primary) 55%, transparent);
+  color-scheme: light;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --background: #141312;
+    --card: #1a1917;
+    --foreground: #e8e3da;
+    --muted-foreground: #9c958a;
+    --border: #2d2b27;
+    --primary: #8fb3e6;
+    --primary-foreground: #10213a;
+    color-scheme: dark;
+  }
+}
+[data-theme="dark"] {
+  --destructive: #e0664f;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-warm: var(--warm);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-serif: Georgia, "Iowan Old Style", "Noto Serif", serif;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  html,
+  body {
+    /* The webview's own overscroll bounce would fight pull-to-sync. */
+    overscroll-behavior-y: contain;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+  }
+}
+
+/* Sync status dot. */
+.dot {
+  @apply size-2 shrink-0 rounded-full bg-muted-foreground;
+}
+.dot.ok {
+  @apply bg-ok;
+}
+.dot.warn {
+  @apply bg-warn;
+}
+.dot.error {
+  @apply bg-destructive;
+}
+.dot.busy {
+  @apply bg-primary;
+  animation: pulse 1s ease-in-out infinite alternate;
+}
+@keyframes pulse {
+  to {
+    opacity: 0.25;
+  }
+}
+
+/* Pull-to-sync disc. */
+.pull {
+  @apply fixed left-1/2 z-10 grid size-10 -translate-x-1/2 place-items-center rounded-full border bg-card shadow-md;
+}
+.pull-ring {
+  fill: none;
+  stroke: var(--muted-foreground);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  transform-origin: 12px 12px;
+  transition: stroke 0.15s;
+}
+.pull.armed .pull-ring,
+.pull.syncing .pull-ring {
+  stroke: var(--primary);
+}
+.pull.syncing svg {
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.library.settling {
+  transition: transform 0.2s ease-out;
+}
+
+/* Progress meter. */
+.meter {
+  @apply h-1 overflow-hidden rounded-full bg-border;
+}
+.meter > div {
+  @apply h-full bg-warm transition-[width] duration-200;
+}
+
+/* Book viewers. */
+.epub-frame {
+  position: absolute;
+  top: 0.5rem;
+  bottom: 0.5rem;
+  left: 50%;
+  width: min(calc(100% - 2.5rem), 46rem);
+  translate: -50% 0;
+}
+.epub-frame.scroll {
+  top: 0;
+  bottom: 0;
+  width: min(100%, 48rem);
+}
+/* Zoomed pages scroll in both directions; at "fit" they stay centred. */
+.pdf-frame {
+  @apply absolute inset-2 overflow-auto;
+  touch-action: pan-x pan-y;
+}
+.pdf-fit {
+  @apply grid min-h-full min-w-full place-items-center;
+  width: max-content;
+}
+.pdf-scroll {
+  @apply absolute inset-0 overflow-auto;
+  touch-action: pan-x pan-y;
+}
+.pdf-column {
+  position: relative;
+  min-width: 100%;
+}
+.pdf-slot {
+  position: absolute;
+  left: 50%;
+  translate: -50% 0;
+  background: #fff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.18);
+}
+.pdf-page {
+  display: block;
+  background: #fff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.18);
+}
+/* PDFs can't be restyled, so dark reading inverts the page (and turns hues back). */
+.pdf-dark .pdf-page,
+.pdf-dark .pdf-slot {
+  filter: invert(0.9) hue-rotate(180deg);
+}
+.pdf-dark .pdf-slot .pdf-page {
+  filter: none;
+}
+.turn {
+  @apply absolute top-0 bottom-0 z-[2] w-[18%] max-w-36;
+}
+.turn.prev {
+  left: 0;
+}
+.turn.next {
+  right: 0;
+}

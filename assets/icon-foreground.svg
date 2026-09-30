@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Android adaptive-icon foreground: the book only, inside the central safe zone. -->
+  <g transform="translate(512 512) scale(0.62) translate(-512 -540)">
+    <path d="M232 300c90-40 190-40 280 20v460c-90-60-190-60-280-20z" fill="#f4efe6"/>
+    <path d="M792 300c-90-40-190-40-280 20v460c90-60 190-60 280-20z" fill="#e6dccb"/>
+    <path d="M640 300v230l50-36 50 36V300z" fill="#e0703a"/>
+  </g>
+</svg>

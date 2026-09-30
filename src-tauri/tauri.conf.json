@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Reader",
+  "version": "0.1.0",
+  "identifier": "org.reader.books",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Reader",
+        "width": 1100,
+        "height": 800,
+        "minWidth": 360,
+        "minHeight": 480
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline' blob:; font-src 'self' blob: data:; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; frame-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost blob: data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": true,
+    "category": "Reference",
+    "shortDescription": "A PDF and EPUB reader that keeps your place across devices",
+    "copyright": "\u00a9 2026 Carlos-err406",
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "12.0"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU1RjUzMDZDRjA5QzI0NTgKUldSWUpKendiREQxVlRvM0s3TVJlT0k2Vnkya2tONHdqY0NLdy9vSzg1UzhSMUpWRDgrSTA1SFMK",
+      "endpoints": [
+        "https://github.com/Carlos-err406/reader/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}
