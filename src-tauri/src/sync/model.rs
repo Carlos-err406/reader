@@ -53,6 +53,10 @@ pub enum Kind {
     Favorite,
     /// A book read to the end, or marked as finished. Marking it not finished tombstones it.
     Finished,
+    /// A named group of books. Deleting it tombstones it and its members.
+    Collection,
+    /// A book in a collection; the id is `<collection id>:<book id>`.
+    Member,
 }
 
 impl Kind {
@@ -64,6 +68,8 @@ impl Kind {
             Kind::Highlight => "highlight",
             Kind::Favorite => "favorite",
             Kind::Finished => "finished",
+            Kind::Collection => "collection",
+            Kind::Member => "member",
         }
     }
 
@@ -75,6 +81,8 @@ impl Kind {
             "highlight" => Ok(Kind::Highlight),
             "favorite" => Ok(Kind::Favorite),
             "finished" => Ok(Kind::Finished),
+            "collection" => Ok(Kind::Collection),
+            "member" => Ok(Kind::Member),
             _ => bail!("Unknown record kind"),
         }
     }
@@ -161,7 +169,26 @@ pub struct HighlightValue {
     pub created_at: i64,
 }
 
-/// When a book was starred or finished. The record's id is the book's.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CollectionValue {
+    pub name: String,
+    pub created_at: i64,
+}
+
+pub const MAX_COLLECTION_NAME: usize = 80;
+
+/// A member record's id: the collection's and the book's, so each membership syncs on its own.
+pub fn member_id(collection: &str, book: &str) -> String {
+    format!("{collection}:{book}")
+}
+
+pub fn parse_member_id(id: &str) -> Option<(&str, &str)> {
+    let (collection, book) = id.split_once(':')?;
+    (is_uuid(collection) && is_sha256(book)).then_some((collection, book))
+}
+
+/// When a book was starred, finished or added to a collection.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MarkedValue {
@@ -252,7 +279,8 @@ pub fn validate_record(record: &Record) -> Result<()> {
     check(time(r.time) && r.counter >= 0 && text(&r.actor, 200))?;
     match record.kind {
         Kind::Book | Kind::Progress | Kind::Favorite | Kind::Finished => check(is_sha256(&record.id))?,
-        Kind::Bookmark | Kind::Highlight => check(is_uuid(&record.id))?,
+        Kind::Bookmark | Kind::Highlight | Kind::Collection => check(is_uuid(&record.id))?,
+        Kind::Member => check(parse_member_id(&record.id).is_some())?,
     }
     let Some(value) = &record.value else { return Ok(()) };
     let value = value.clone();
@@ -261,7 +289,11 @@ pub fn validate_record(record: &Record) -> Result<()> {
         Kind::Progress => validate_progress(&serde_json::from_value(value).map_err(|_| invalid())?),
         Kind::Bookmark => validate_bookmark(&serde_json::from_value(value).map_err(|_| invalid())?),
         Kind::Highlight => validate_highlight(&serde_json::from_value(value).map_err(|_| invalid())?),
-        Kind::Favorite | Kind::Finished => {
+        Kind::Collection => {
+            let collection: CollectionValue = serde_json::from_value(value).map_err(|_| invalid())?;
+            check(text(&collection.name, MAX_COLLECTION_NAME) && time(collection.created_at))
+        }
+        Kind::Favorite | Kind::Finished | Kind::Member => {
             let marked: MarkedValue = serde_json::from_value(value).map_err(|_| invalid())?;
             check(time(marked.at))
         }

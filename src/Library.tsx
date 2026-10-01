@@ -14,6 +14,8 @@ import {
   Search,
   Star,
   StarOff,
+  Pencil,
+  Tag,
   Trash2,
   Type,
   X,
@@ -32,13 +34,15 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useMedia } from "@/hooks/useMedia";
 import { cn } from "@/lib/utils";
-import { api, message, type Book, type Status } from "./api";
+import { api, message, onChanged as onRecordsChanged, type Book, type Collection, type Status } from "./api";
 import { ago, day, size, statusLine } from "./format";
 import {
+  collectionShelf,
   continueReading,
   counts,
-  inSection,
   loadView,
+  onShelf,
+  shelfCollection,
   matches,
   saveView,
   SECTIONS,
@@ -46,8 +50,11 @@ import {
   SORTS,
   type LibraryView,
   type Section,
+  type Shelf,
   type Sort,
 } from "./shelves";
+import { CollectionsSheet } from "./CollectionsSheet";
+import { NameDialog } from "@/components/NameDialog";
 import { readMetadata } from "./metadata";
 import { cachedCover, loadCover, makeCover } from "./covers";
 import { SyncPanel } from "./SyncPanel";
@@ -117,17 +124,53 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
       return next;
     });
   const [query, setQuery] = useState("");
-  const section = view.section;
-  const current = SECTIONS.find((s) => s.id === section)!;
+
+  // Collections, kept fresh as this or the other device changes them.
+  const [collections, setCollections] = useState<Collection[]>();
+  const loadCollections = useCallback(() => {
+    api.collections().then(setCollections, (e) => setError(message(e)));
+  }, []);
+  useEffect(() => {
+    loadCollections();
+    const unlisten = onRecordsChanged((changed) => {
+      if (changed.some((c) => ["collection", "member", "book"].includes(c.kind))) loadCollections();
+    });
+    return () => void unlisten.then((f) => f());
+  }, [loadCollections]);
+  const [filing, setFiling] = useState<Book>();
+  const [naming, setNaming] = useState<{ rename?: Collection } | null>(null);
+  const [deleting, setDeleting] = useState<Collection>();
+
+  // A collection deleted (here or elsewhere) while open falls back to all books.
+  const opened = shelfCollection(view.section, collections ?? []);
+  const section: Shelf = view.section.startsWith("c:") && collections && !opened ? "all" : view.section;
+  const builtIn = SECTIONS.find((s) => s.id === section);
+  const current = builtIn ?? {
+    id: section,
+    name: opened?.name ?? "Collection",
+    empty: "No books here yet. Add one from its ⋯ menu, under Collections.",
+  };
   const sortName = SORTS.find((s) => s.id === view.sort)!.name;
   const tally = counts(books);
   const searching = query.trim().length > 0;
   // Continue reading leads All and Reading, unless searching; it isn't repeated in the list.
   const resume = !searching && (section === "all" || section === "reading") ? continueReading(books) : undefined;
   const shown = sortBooks(
-    books.filter((b) => inSection(b, section) && matches(b, query) && b.id !== resume?.id),
+    books.filter((b) => onShelf(b, section, collections ?? []) && matches(b, query) && b.id !== resume?.id),
     view.sort,
   );
+  const actionsFor = (book: Book): BookActions => ({
+    onCollections: () => setFiling(book),
+    onFavorite: (on) => void mark(api.setFavorite(book.id, on)),
+    onFinished: (on) => void mark(api.setFinished(book.id, on)),
+    onRemove: () => setRemoving(book),
+  });
+  const tagsOf = (book: Book) => (collections ?? []).filter((c) => c.books.includes(book.id)).map((c) => c.name);
+  const saveName = async (name: string) => {
+    if (naming?.rename) await api.renameCollection(naming.rename.id, name);
+    else setView({ section: collectionShelf((await api.createCollection(name)).id) });
+    loadCollections();
+  };
 
   const pullSync = useCallback(() => {
     setRefreshing(true);
@@ -268,6 +311,37 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
                     <span className="text-xs text-muted-foreground tabular-nums">{tally[s.id]}</span>
                   </button>
                 ))}
+                <div className="mt-4 mb-1 flex items-center justify-between px-3">
+                  <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Collections</h3>
+                  <Button variant="ghost" size="icon-sm" className="-mr-2 size-7 text-muted-foreground" aria-label="New collection" onClick={() => setNaming({})}>
+                    <Plus />
+                  </Button>
+                </div>
+                {collections?.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    aria-current={section === collectionShelf(c.id) ? "page" : undefined}
+                    onClick={() => setView({ section: collectionShelf(c.id) })}
+                    className={cn(
+                      "flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring",
+                      section === collectionShelf(c.id) && "bg-accent font-semibold",
+                    )}
+                  >
+                    <Tag className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate">{c.name}</span>
+                    <span className="text-xs text-muted-foreground tabular-nums">{c.books.length}</span>
+                  </button>
+                ))}
+                {collections?.length === 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setNaming({})}
+                    className="rounded-lg px-3 py-2 text-left text-sm text-muted-foreground outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring"
+                  >
+                    Group books into collections…
+                  </button>
+                )}
                 <div className="my-2 border-t" />
                 <button
                   type="button"
@@ -288,7 +362,10 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
           <div className="min-w-0 flex-1">
             <header className="flex items-center gap-2 pt-2 pb-3">
               {wide ? (
-                <h2 className="flex-1 truncate font-serif text-2xl font-semibold">{current.name}</h2>
+                <div className="flex min-w-0 flex-1 items-center gap-1">
+                  <h2 className="truncate font-serif text-2xl font-semibold">{current.name}</h2>
+                  {opened && <CollectionMenu collection={opened} onRename={() => setNaming({ rename: opened })} onDelete={() => setDeleting(opened)} />}
+                </div>
               ) : (
                 <h1 className="flex-1 shrink-0 font-serif text-[1.55rem] font-semibold sm:text-3xl">Library</h1>
               )}
@@ -350,6 +427,37 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
                     <span className={cn("tabular-nums opacity-70")}>{tally[s.id]}</span>
                   </button>
                 ))}
+                {collections?.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    aria-pressed={section === collectionShelf(c.id)}
+                    onClick={() => setView({ section: collectionShelf(c.id) })}
+                    className={cn(
+                      "flex h-8 shrink-0 items-center gap-1.5 rounded-full border bg-card px-3 text-sm whitespace-nowrap transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
+                      section === collectionShelf(c.id) && "border-primary bg-primary text-primary-foreground",
+                    )}
+                  >
+                    <Tag className="size-3.5" />
+                    {c.name}
+                    <span className="tabular-nums opacity-70">{c.books.length}</span>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setNaming({})}
+                  className="flex h-8 shrink-0 items-center gap-1 rounded-full border border-dashed px-3 text-sm whitespace-nowrap text-muted-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
+                >
+                  <Plus className="size-3.5" />
+                  Collection
+                </button>
+              </div>
+            )}
+            {!wide && opened && (
+              <div className="mb-3 flex items-center gap-1">
+                <Tag className="size-4 text-muted-foreground" />
+                <strong className="min-w-0 truncate font-serif text-lg">{opened.name}</strong>
+                <CollectionMenu collection={opened} onRename={() => setNaming({ rename: opened })} onDelete={() => setDeleting(opened)} />
               </div>
             )}
 
@@ -404,6 +512,29 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
               }}
             />
             {status && <AboutSheet open={showAbout} onOpenChange={setShowAbout} platform={status.platform} />}
+            <CollectionsSheet
+              book={filing}
+              onClose={() => setFiling(undefined)}
+              collections={collections ?? []}
+              onChanged={loadCollections}
+            />
+            <NameDialog
+              open={!!naming}
+              onOpenChange={(open) => !open && setNaming(null)}
+              title={naming?.rename ? "Rename collection" : "New collection"}
+              description={naming?.rename ? "Books in it stay where they are." : "Then add books from their ⋯ menu, under Collections."}
+              initial={naming?.rename?.name ?? ""}
+              confirm={naming?.rename ? "Rename" : "Create"}
+              onSave={saveName}
+            />
+            <ConfirmDialog
+              open={!!deleting}
+              onOpenChange={(open) => !open && setDeleting(undefined)}
+              title={`Delete “${deleting?.name ?? ""}”?`}
+              description="The collection is deleted on every synced device. Its books stay in your library."
+              confirm="Delete"
+              onConfirm={() => deleting && void mark(api.deleteCollection(deleting.id).then(loadCollections))}
+            />
             <ConfirmDialog
               open={!!removing}
               onOpenChange={(open) => !open && setRemoving(undefined)}
@@ -415,7 +546,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
             {status && <UpdateBanner platform={status.platform} />}
             {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
 
-            {resume && <ContinueCard book={resume} onOpen={() => onOpen(resume)} />}
+            {resume && <ContinueCard book={resume} tags={tagsOf(resume)} onOpen={() => onOpen(resume)} actions={actionsFor(resume)} />}
 
             {books.length === 0 ? (
               <div className="px-4 py-16 text-center">
@@ -436,14 +567,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
                 {resume && <h2 className="mb-2 text-sm font-semibold text-muted-foreground">{current.id === "all" ? "All books" : current.name}</h2>}
                 <ul className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
                   {shown.map((book) => (
-                    <BookCard
-                      key={book.id}
-                      book={book}
-                      onOpen={() => onOpen(book)}
-                      onFavorite={(on) => void mark(api.setFavorite(book.id, on))}
-                      onFinished={(on) => void mark(api.setFinished(book.id, on))}
-                      onRemove={() => setRemoving(book)}
-                    />
+                    <BookCard key={book.id} book={book} tags={tagsOf(book)} onOpen={() => onOpen(book)} actions={actionsFor(book)} />
                   ))}
                 </ul>
               </>
@@ -479,6 +603,29 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
   );
 }
 
+/** Rename or delete the open collection. */
+function CollectionMenu({ collection, onRename, onDelete }: { collection: Collection; onRename: () => void; onDelete: () => void }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon-sm" className="shrink-0 text-muted-foreground" aria-label={`Options for ${collection.name}`}>
+          <EllipsisVertical />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="bg-card">
+        <DropdownMenuItem onSelect={onRename}>
+          <Pencil />
+          Rename
+        </DropdownMenuItem>
+        <DropdownMenuItem variant="destructive" onSelect={onDelete}>
+          <Trash2 />
+          Delete collection
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 /** The cover, with a star on favorites. */
 function BadgedCover({ book, large }: { book: Book; large?: boolean }) {
   return (
@@ -499,12 +646,13 @@ function SectionIcon({ section }: { section: Section }) {
 }
 
 /** The last book read and not finished, to pick up where you left off. */
-function ContinueCard({ book, onOpen }: { book: Book; onOpen: () => void }) {
+function ContinueCard({ book, tags, onOpen, actions }: { book: Book; tags: string[]; onOpen: () => void; actions: BookActions }) {
   const percent = Math.round((book.progress?.fraction ?? 0) * 100);
   return (
     <section aria-label="Continue reading" className="mb-6">
       <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Continue reading</h2>
-      <div className="flex gap-4 rounded-2xl border bg-card p-4">
+      <div className="relative flex gap-4 rounded-2xl border bg-card p-4 pr-10">
+        <BookMenu book={book} actions={actions} />
         <BadgedCover book={book} large />
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <strong className="line-clamp-2 font-serif text-xl leading-snug">{book.title}</strong>
@@ -512,6 +660,12 @@ function ContinueCard({ book, onOpen }: { book: Book; onOpen: () => void }) {
           {book.progress && (
             <span className="truncate text-sm text-muted-foreground">
               {book.progress.label} · {ago(book.progress.updatedAt)}
+            </span>
+          )}
+          {tags.length > 0 && (
+            <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+              <Tag className="size-3 shrink-0" />
+              <span className="truncate">{tags.join(" · ")}</span>
             </span>
           )}
           <div className="mt-auto flex items-center gap-3 pt-2">
@@ -530,15 +684,60 @@ function ContinueCard({ book, onOpen }: { book: Book; onOpen: () => void }) {
   );
 }
 
-interface CardProps {
-  book: Book;
-  onOpen: () => void;
+interface BookActions {
+  onCollections: () => void;
   onFavorite: (on: boolean) => void;
   onFinished: (on: boolean) => void;
   onRemove: () => void;
 }
 
-function BookCard({ book, onOpen, onFavorite, onFinished, onRemove }: CardProps) {
+/** A book's ⋯ menu: favorite, collections, finished, remove. */
+function BookMenu({ book, actions }: { book: Book; actions: BookActions }) {
+  const { onCollections, onFavorite, onFinished, onRemove } = actions;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="absolute top-1.5 right-1.5 text-muted-foreground"
+          aria-label={`More for ${book.title}`}
+        >
+          <EllipsisVertical />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="bg-card">
+        <DropdownMenuItem onSelect={() => onFavorite(!book.favorite)}>
+          {book.favorite ? <StarOff /> : <Star />}
+          {book.favorite ? "Remove from favorites" : "Add to favorites"}
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onCollections}>
+          <Tag />
+          Collections…
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onFinished(!book.finishedAt)}>
+          {book.finishedAt ? <RotateCcw /> : <CircleCheck />}
+          {book.finishedAt ? "Mark as not finished" : "Mark as finished"}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" onSelect={onRemove}>
+          <Trash2 />
+          Remove from library
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+interface CardProps {
+  book: Book;
+  /** Names of the collections it's in. */
+  tags: string[];
+  onOpen: () => void;
+  actions: BookActions;
+}
+
+function BookCard({ book, tags, onOpen, actions }: CardProps) {
   const fraction = book.finishedAt ? 1 : (book.progress?.fraction ?? 0);
   return (
     <li className={cn("relative", !book.available && "opacity-70")}>
@@ -562,38 +761,18 @@ function BookCard({ book, onOpen, onFavorite, onFinished, onRemove }: CardProps)
               (book.progress?.label ?? `Not started · ${size(book.size)}`)
             )}
           </span>
+          {tags.length > 0 && (
+            <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground" aria-label={`Collections: ${tags.join(", ")}`}>
+              <Tag className="size-3 shrink-0" />
+              <span className="truncate">{tags.join(" · ")}</span>
+            </span>
+          )}
           <div className="meter mt-auto">
             <div style={{ width: `${Math.round(fraction * 100)}%` }} />
           </div>
         </div>
       </button>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="absolute top-1.5 right-1.5 text-muted-foreground"
-            aria-label={`More for ${book.title}`}
-          >
-            <EllipsisVertical />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="bg-card">
-          <DropdownMenuItem onSelect={() => onFavorite(!book.favorite)}>
-            {book.favorite ? <StarOff /> : <Star />}
-            {book.favorite ? "Remove from favorites" : "Add to favorites"}
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => onFinished(!book.finishedAt)}>
-            {book.finishedAt ? <RotateCcw /> : <CircleCheck />}
-            {book.finishedAt ? "Mark as not finished" : "Mark as finished"}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem variant="destructive" onSelect={onRemove}>
-            <Trash2 />
-            Remove from library
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <BookMenu book={book} actions={actions} />
     </li>
   );
 }

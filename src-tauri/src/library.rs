@@ -1,10 +1,10 @@
 //! Local library operations. Each edit is stamped for sync in the same transaction.
 use crate::error::{bail, Result};
-use crate::store::{now_ms, Book, Bookmark, Highlight, Store};
+use crate::store::{now_ms, Book, Bookmark, Collection, Highlight, Store};
 use crate::sync::model::{
     is_sha256, validate_book, validate_bookmark, validate_highlight, validate_progress, BookValue,
-    BookmarkValue, Color, Format, HighlightValue, Kind, MarkedValue, ProgressValue, MAX_BOOK_BYTES,
-    MAX_HIGHLIGHT_TEXT,
+    BookmarkValue, Color, CollectionValue, Format, HighlightValue, Kind, MarkedValue, ProgressValue, MAX_BOOK_BYTES,
+    MAX_COLLECTION_NAME, MAX_HIGHLIGHT_TEXT, is_uuid, member_id,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -95,6 +95,11 @@ pub fn remove(store: &Store, id: &str) -> Result<()> {
             edits.push((kind, id.to_owned(), None));
         }
     }
+    for (collection, book) in store.members()? {
+        if book == id {
+            edits.push((Kind::Member, member_id(&collection, &book), None));
+        }
+    }
     store.stamp(edits)?;
     store.release_deleted_blobs()?;
     Ok(())
@@ -166,6 +171,79 @@ pub fn remove_bookmark(store: &Store, id: &str) -> Result<()> {
         Some(record) if record.value.is_some() => store.stamp(vec![(Kind::Bookmark, id.to_owned(), None)]),
         _ => Ok(()),
     }
+}
+
+fn collection_name(name: &str) -> Result<String> {
+    let name = clip(&name.split_whitespace().collect::<Vec<_>>().join(" "), MAX_COLLECTION_NAME);
+    if name.is_empty() {
+        bail!("Give the collection a name");
+    }
+    Ok(name)
+}
+
+fn same_name(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
+}
+
+/// A collection called `name`; one that already has that name is reused rather than doubled.
+pub fn create_collection(store: &Store, name: &str) -> Result<Collection> {
+    let name = collection_name(name)?;
+    if let Some(existing) = store.collections()?.into_iter().find(|c| same_name(&c.name, &name)) {
+        return Ok(existing);
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let value = CollectionValue { name, created_at: now_ms() };
+    store.stamp(vec![(Kind::Collection, id.clone(), Some(serde_json::to_value(&value)?))])?;
+    Ok(Collection { id, name: value.name, created_at: value.created_at, books: Vec::new() })
+}
+
+fn collection(store: &Store, id: &str) -> Result<CollectionValue> {
+    if !is_uuid(id) {
+        bail!("Unknown collection");
+    }
+    match store.record(Kind::Collection, id)?.and_then(|r| r.value) {
+        Some(value) => Ok(serde_json::from_value(value)?),
+        None => bail!("This collection was deleted"),
+    }
+}
+
+pub fn rename_collection(store: &Store, id: &str, name: &str) -> Result<()> {
+    let mut value = collection(store, id)?;
+    let name = collection_name(name)?;
+    if store.collections()?.iter().any(|c| c.id != id && same_name(&c.name, &name)) {
+        bail!("There's already a collection called “{name}”");
+    }
+    if value.name != name {
+        value.name = name;
+        store.stamp(vec![(Kind::Collection, id.to_owned(), Some(serde_json::to_value(&value)?))])?;
+    }
+    Ok(())
+}
+
+/// The books stay in the library; only the grouping goes.
+pub fn delete_collection(store: &Store, id: &str) -> Result<()> {
+    collection(store, id)?;
+    let mut edits = vec![(Kind::Collection, id.to_owned(), None)];
+    for (c, book) in store.members()? {
+        if c == id {
+            edits.push((Kind::Member, member_id(&c, &book), None));
+        }
+    }
+    store.stamp(edits)
+}
+
+/// Adds a book to a collection or takes it out. Returns whether anything changed.
+pub fn set_member(store: &Store, collection_id: &str, book: &str, on: bool) -> Result<bool> {
+    collection(store, collection_id)?;
+    require_book(store, book)?;
+    let id = member_id(collection_id, book);
+    let member = store.record(Kind::Member, &id)?.is_some_and(|r| r.value.is_some());
+    if member == on {
+        return Ok(false);
+    }
+    let value = on.then(|| serde_json::to_value(MarkedValue { at: now_ms() })).transpose()?;
+    store.stamp(vec![(Kind::Member, id, value)])?;
+    Ok(true)
 }
 
 #[derive(Debug, Deserialize)]
@@ -329,6 +407,40 @@ mod tests {
         for kind in [Kind::Favorite, Kind::Finished] {
             assert!(store.record(kind, &book.id).unwrap().is_none_or(|r| r.value.is_none()));
         }
+    }
+
+    #[test]
+    fn collections_group_books_and_leave_them_be_when_deleted() {
+        let store = Store::memory().unwrap();
+        let book = import(&store, &epub(), ImportMeta { title: "E".into(), author: None }).unwrap();
+        let other = import(&store, b"%PDF-1.4 another", ImportMeta { title: "P".into(), author: None }).unwrap();
+
+        let sci = create_collection(&store, "  Science   fiction ").unwrap();
+        assert_eq!(sci.name, "Science fiction");
+        assert_eq!(create_collection(&store, "science FICTION").unwrap().id, sci.id);
+        assert!(create_collection(&store, "   ").is_err());
+        let fav = create_collection(&store, "Audio").unwrap();
+
+        assert!(set_member(&store, &sci.id, &book.id, true).unwrap());
+        assert!(!set_member(&store, &sci.id, &book.id, true).unwrap());
+        set_member(&store, &sci.id, &other.id, true).unwrap();
+        set_member(&store, &fav.id, &book.id, true).unwrap();
+        let all = store.collections().unwrap();
+        assert_eq!(all.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Audio", "Science fiction"]);
+        assert_eq!(all[1].books.len(), 2);
+
+        assert!(rename_collection(&store, &fav.id, "SCIENCE fiction").is_err());
+        rename_collection(&store, &fav.id, "Audiobooks").unwrap();
+
+        // Removing a book takes it out of its collections.
+        remove(&store, &other.id).unwrap();
+        assert_eq!(store.collections().unwrap()[1].books, [book.id.clone()]);
+
+        delete_collection(&store, &sci.id).unwrap();
+        assert_eq!(store.collections().unwrap().len(), 1);
+        assert_eq!(store.books().unwrap().len(), 1);
+        assert!(set_member(&store, &sci.id, &book.id, true).is_err());
+        assert!(store.members().unwrap().iter().all(|(c, _)| *c == fav.id));
     }
 
     #[test]

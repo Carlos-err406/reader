@@ -52,6 +52,14 @@ export interface Highlight {
 
 export type NewHighlight = Pick<Highlight, "location" | "text" | "color" | "label" | "fraction">;
 
+export interface Collection {
+  id: string;
+  name: string;
+  createdAt: number;
+  /** Ids of the books in it. */
+  books: string[];
+}
+
 export interface Status {
   enabled: boolean;
   syncing: boolean;
@@ -77,7 +85,7 @@ export interface Status {
 }
 
 export interface Changed {
-  kind: "book" | "progress" | "bookmark" | "highlight" | "favorite" | "finished";
+  kind: "book" | "progress" | "bookmark" | "highlight" | "favorite" | "finished" | "collection" | "member";
   id: string;
 }
 
@@ -102,6 +110,12 @@ export const api = {
   setProgress: (bookId: string, p: Position) => invoke<void>("set_progress", { bookId, ...p }),
   setFavorite: (bookId: string, on: boolean) => invoke<void>("set_favorite", { bookId, on }),
   setFinished: (bookId: string, on: boolean) => invoke<void>("set_finished", { bookId, on }),
+  collections: () => invoke<Collection[]>("list_collections"),
+  createCollection: (name: string) => invoke<Collection>("create_collection", { name }),
+  renameCollection: (id: string, name: string) => invoke<void>("rename_collection", { id, name }),
+  deleteCollection: (id: string) => invoke<void>("delete_collection", { id }),
+  setInCollection: (collectionId: string, bookId: string, on: boolean) =>
+    invoke<void>("set_in_collection", { collectionId, bookId, on }),
   bookmarks: (bookId: string) => invoke<Bookmark[]>("list_bookmarks", { bookId }),
   addBookmark: (bookId: string, p: Position) =>
     invoke<Bookmark>("add_bookmark", { bookId, location: p.location, label: p.label }),

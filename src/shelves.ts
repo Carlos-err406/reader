@@ -1,7 +1,18 @@
-import type { Book } from "./api";
+import type { Book, Collection } from "./api";
 import { fold } from "./format";
 
 export type Section = "all" | "reading" | "favorites" | "finished" | "unread";
+/** What the library shows: a built-in section, or a collection (`c:<id>`). */
+export type Shelf = Section | `c:${string}`;
+
+export const collectionShelf = (id: string): Shelf => `c:${id}`;
+export const shelfCollection = (shelf: Shelf, collections: Collection[]) =>
+  shelf.startsWith("c:") ? collections.find((c) => c.id === shelf.slice(2)) : undefined;
+
+export function onShelf(book: Book, shelf: Shelf, collections: Collection[]): boolean {
+  if (!shelf.startsWith("c:")) return inSection(book, shelf as Section);
+  return !!shelfCollection(shelf, collections)?.books.includes(book.id);
+}
 export type Sort = "recent" | "title" | "author" | "added" | "progress";
 
 export const SECTIONS: { id: Section; name: string; empty: string }[] = [
@@ -91,7 +102,7 @@ export function continueReading(books: Book[]): Book | undefined {
 }
 
 export interface LibraryView {
-  section: Section;
+  section: Shelf;
   sort: Sort;
 }
 
@@ -101,7 +112,11 @@ export function loadView(): LibraryView {
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) ?? "null") as Partial<LibraryView> | null;
     return {
-      section: SECTIONS.some((s) => s.id === saved?.section) ? saved!.section! : "all",
+      // A collection is checked against the library once it's loaded.
+      section:
+        SECTIONS.some((s) => s.id === saved?.section) || (typeof saved?.section === "string" && saved.section.startsWith("c:"))
+          ? saved!.section!
+          : "all",
       sort: SORTS.some((s) => s.id === saved?.sort) ? saved!.sort! : "recent",
     };
   } catch {

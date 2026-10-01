@@ -24,6 +24,13 @@ export function Panel({ open, onOpenChange, title, description, children }: Prop
       <SheetContent
         ref={sheet}
         side={wide ? "right" : "bottom"}
+        // On a phone, focusing a text field would raise the keyboard over the sheet just for
+        // opening it; focus the sheet itself until a field is tapped.
+        onOpenAutoFocus={(e) => {
+          if (wide) return;
+          e.preventDefault();
+          sheet.current?.focus();
+        }}
         className={cn(
           "gap-0 bg-card",
           wide ? "w-[400px] sm:max-w-[400px]" : "max-h-[88dvh] rounded-t-2xl",

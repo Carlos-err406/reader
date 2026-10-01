@@ -51,3 +51,14 @@ describe("library sections", () => {
     expect(sortBooks(all, "added")[0]).toBe(notes2);
   });
 });
+
+describe("collections", () => {
+  it("show their own books and fall back when deleted", async () => {
+    const { onShelf, shelfCollection } = await import("./shelves");
+    const collections = [{ id: "s", name: "Sci-fi", createdAt: 1, books: [dune.id] }];
+    expect(all.filter((b) => onShelf(b, "c:s", collections))).toEqual([dune]);
+    expect(all.filter((b) => onShelf(b, "c:gone", collections))).toEqual([]);
+    expect(shelfCollection("c:s", collections)?.name).toBe("Sci-fi");
+    expect(shelfCollection("reading", collections)).toBeUndefined();
+  });
+});

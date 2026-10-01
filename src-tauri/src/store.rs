@@ -2,8 +2,8 @@
 //! Every method is synchronous, so no transaction ever spans a network await.
 use crate::error::{bail, Result};
 use crate::sync::model::{
-    canonical, validate_record, BookValue, BookmarkValue, HighlightValue, Kind, ProgressValue, Record,
-    Revision,
+    canonical, parse_member_id, validate_record, BookValue, BookmarkValue, CollectionValue, HighlightValue, Kind,
+    ProgressValue, Record, Revision,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
@@ -62,6 +62,16 @@ pub struct Highlight {
     pub id: String,
     #[serde(flatten)]
     pub value: HighlightValue,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Collection {
+    pub id: String,
+    pub name: String,
+    pub created_at: i64,
+    /// The books in it that are still in the library.
+    pub books: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -363,6 +373,46 @@ impl Store {
         rows.into_iter()
             .map(|(id, value)| Ok(Highlight { id, value: serde_json::from_str(&value)? }))
             .collect()
+    }
+
+    /// Live memberships as (collection, book), including ones whose book was removed.
+    pub fn members(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.lock();
+        let ids = conn
+            .prepare("SELECT id FROM records WHERE kind='member' AND value IS NOT NULL")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids
+            .iter()
+            .filter_map(|id| parse_member_id(id).map(|(c, b)| (c.to_owned(), b.to_owned())))
+            .collect())
+    }
+
+    /// Collections by name, each with the books in it that are still in the library.
+    pub fn collections(&self) -> Result<Vec<Collection>> {
+        let (rows, live) = {
+            let conn = self.lock();
+            let rows = conn
+                .prepare("SELECT id, value FROM records WHERE kind='collection' AND value IS NOT NULL")?
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let live = conn
+                .prepare("SELECT id FROM records WHERE kind='book' AND value IS NOT NULL")?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+            (rows, live)
+        };
+        let members = self.members()?;
+        let mut collections = rows
+            .into_iter()
+            .map(|(id, value)| {
+                let value: CollectionValue = serde_json::from_str(&value)?;
+                let books = members.iter().filter(|(c, b)| *c == id && live.contains(b)).map(|(_, b)| b.clone()).collect();
+                Ok(Collection { id, name: value.name, created_at: value.created_at, books })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        collections.sort_by_cached_key(|c| (c.name.to_lowercase(), c.created_at));
+        Ok(collections)
     }
 
     /// Counts of books in the library, books whose bytes are on this device, bookmarks and highlights.

@@ -10,7 +10,7 @@ use error::{bail, Error, Result};
 use google::{GoogleAuth, GoogleStatus};
 use serde::Serialize;
 use std::sync::Arc;
-use store::{Book, Bookmark, Highlight, Store};
+use store::{Book, Bookmark, Collection, Highlight, Store};
 use sync::drive::Drive;
 use sync::engine::{Engine, Event, SyncStatus};
 use sync::model::ProgressValue;
@@ -148,6 +148,40 @@ fn set_favorite(book_id: String, on: bool, state: State<'_, AppState>) -> Result
 #[tauri::command]
 fn set_finished(book_id: String, on: bool, state: State<'_, AppState>) -> Result<()> {
     if library::set_mark(&state.store, sync::model::Kind::Finished, &book_id, on)? {
+        state.sync.local_changed();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_collections(state: State<'_, AppState>) -> Result<Vec<Collection>> {
+    state.store.collections()
+}
+
+#[tauri::command]
+fn create_collection(name: String, state: State<'_, AppState>) -> Result<Collection> {
+    let collection = library::create_collection(&state.store, &name)?;
+    state.sync.local_changed();
+    Ok(collection)
+}
+
+#[tauri::command]
+fn rename_collection(id: String, name: String, state: State<'_, AppState>) -> Result<()> {
+    library::rename_collection(&state.store, &id, &name)?;
+    state.sync.local_changed();
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_collection(id: String, state: State<'_, AppState>) -> Result<()> {
+    library::delete_collection(&state.store, &id)?;
+    state.sync.local_changed();
+    Ok(())
+}
+
+#[tauri::command]
+fn set_in_collection(collection_id: String, book_id: String, on: bool, state: State<'_, AppState>) -> Result<()> {
+    if library::set_member(&state.store, &collection_id, &book_id, on)? {
         state.sync.local_changed();
     }
     Ok(())
@@ -320,6 +354,11 @@ pub fn run() {
             remove_bookmark,
             set_favorite,
             set_finished,
+            list_collections,
+            create_collection,
+            rename_collection,
+            delete_collection,
+            set_in_collection,
             list_highlights,
             add_highlight,
             recolor_highlight,
