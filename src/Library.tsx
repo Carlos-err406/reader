@@ -36,7 +36,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useMedia } from "@/hooks/useMedia";
-import { cn } from "@/lib/utils";
+import { cn, swallowNextClick } from "@/lib/utils";
 import { api, message, onChanged as onRecordsChanged, type Book, type Collection, type Status } from "./api";
 import { ago, day, size, statusLine } from "./format";
 import {
@@ -275,14 +275,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
       cancelAnimationFrame(frame);
       frame = 0;
       // Lifting the finger over another book mustn't also tap it.
-      if (s.moved) {
-        const swallow = (e: MouseEvent) => {
-          e.stopPropagation();
-          e.preventDefault();
-        };
-        window.addEventListener("click", swallow, { capture: true, once: true });
-        setTimeout(() => window.removeEventListener("click", swallow, { capture: true }), 400);
-      }
+      if (s.moved) swallowNextClick(400);
     };
     window.addEventListener("touchmove", move, { passive: false });
     window.addEventListener("touchend", end);
