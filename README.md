@@ -27,9 +27,9 @@ Sync needs a Google OAuth client for each platform. See [Google setup](docs/goog
 
 ## Using it
 
-- **Add book** imports PDFs and EPUBs. A book's identity is the SHA-256 of its bytes, so importing the same file on both devices gives you one book.
+- **Add book** imports PDFs and EPUBs. On the Mac you can also drag books from Finder into the window. A book's identity is the SHA-256 of its bytes, so importing the same file on both devices gives you one book.
 - Books scroll continuously by default. **Aa** switches to page turns (edge taps, swipes, arrow keys) and sets the appearance (System, Light or Dark), the skin (Paper, Sepia, Slate or Contrast), the font (Literata, Serif, Sans, Hyperlegible or the book's own) and the text size. These settings are per device.
 - The bookmark icon saves where you are. Select text (long-press on a phone) and pick one of five colours to highlight it, and tap a highlight to recolour, copy or delete it. The list icon shows the book's highlights and bookmarks. The highlighter in the library lists every book's highlights, with search, and opens a book right at one. Scanned PDFs without a text layer can't be highlighted.
 - Pull down in the library to sync right away.
-- **Sync → Turn on sync with Google Drive** signs you in and combines both libraries. Page turns upload about 2 seconds after you stop. Other devices check every 30 seconds, and right away when the app comes back to the foreground.
+- **Sync** (at the bottom of the library, next to About) → **Turn on sync with Google Drive** signs you in and combines both libraries. Page turns upload about 2 seconds after you stop. Other devices check every 30 seconds, and right away when the app comes back to the foreground.
 - If another device moves ahead while a book is open, the reader offers "Another device is at Page 57 — Go there / Stay". It never jumps without asking.

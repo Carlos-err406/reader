@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { EllipsisVertical, Highlighter, Info, Plus, Trash2, Type } from "lucide-react";
+import { EllipsisVertical, FileDown, Highlighter, Info, Plus, Trash2, Type } from "lucide-react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -67,6 +67,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
   const [showHighlights, setShowHighlights] = useState(false);
   const [removing, setRemoving] = useState<Book>();
   const [refreshing, setRefreshing] = useState(false);
+  const [dropping, setDropping] = useState(false);
 
   const pullSync = useCallback(() => {
     setRefreshing(true);
@@ -84,7 +85,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
     return () => clearTimeout(done);
   }, [refreshing, syncing]);
 
-  const importFiles = async (files: FileList | null) => {
+  const importFiles = async (files: FileList | File[] | null) => {
     setError(undefined);
     for (const file of Array.from(files ?? [])) {
       setImporting(file.name);
@@ -101,6 +102,48 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
     onChanged();
   };
 
+  // Books dragged in from Finder (or any file manager) are imported like picked ones.
+  const latestImport = useRef(importFiles);
+  latestImport.current = importFiles;
+  useEffect(() => {
+    const files = (e: DragEvent) => !!e.dataTransfer?.types.includes("Files");
+    // Entering and leaving child elements fire in pairs; only the outermost pair counts.
+    let depth = 0;
+    const enter = (e: DragEvent) => {
+      if (!files(e)) return;
+      e.preventDefault();
+      depth++;
+      setDropping(true);
+    };
+    const over = (e: DragEvent) => {
+      if (!files(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    };
+    const leave = (e: DragEvent) => {
+      if (!files(e)) return;
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) setDropping(false);
+    };
+    const drop = (e: DragEvent) => {
+      if (!files(e)) return;
+      e.preventDefault();
+      depth = 0;
+      setDropping(false);
+      if (e.dataTransfer?.files.length) void latestImport.current(Array.from(e.dataTransfer.files));
+    };
+    window.addEventListener("dragenter", enter);
+    window.addEventListener("dragover", over);
+    window.addEventListener("dragleave", leave);
+    window.addEventListener("drop", drop);
+    return () => {
+      window.removeEventListener("dragenter", enter);
+      window.removeEventListener("dragover", over);
+      window.removeEventListener("dragleave", leave);
+      window.removeEventListener("drop", drop);
+    };
+  }, []);
+
   const remove = async (book: Book) => {
     try {
       await api.removeBook(book.id);
@@ -112,6 +155,15 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
 
   return (
     <>
+      {dropping && (
+        <div className="pointer-events-none fixed inset-3 z-50 grid place-items-center rounded-2xl border-2 border-dashed border-primary bg-background/85 backdrop-blur-sm">
+          <div className="grid justify-items-center gap-2 text-center">
+            <FileDown className="size-10 text-primary" />
+            <strong className="font-serif text-xl">Drop to add to your library</strong>
+            <span className="text-sm text-muted-foreground">PDF and EPUB books</span>
+          </div>
+        </div>
+      )}
       {(pull > 0 || refreshing) && (
         <PullIndicator
           pull={pull}
@@ -128,18 +180,6 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
       >
         <header className="flex items-center gap-2 pt-2 pb-4">
           <h1 className="flex-1 shrink-0 font-serif text-[1.55rem] font-semibold sm:text-3xl">Library</h1>
-          {status && (
-            <Button
-              variant="outline"
-              className="min-w-10 shrink rounded-full bg-card px-3"
-              onClick={() => setShowSync(true)}
-              aria-haspopup="dialog"
-              aria-label={`Sync: ${statusLine(status).text}`}
-            >
-              <span className={cn("dot", statusLine(status).tone)} />
-              <span className="truncate">{statusLine(status).text}</span>
-            </Button>
-          )}
           <Button
             variant="outline"
             size="icon"
@@ -194,7 +234,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
           open={!!removing}
           onOpenChange={(open) => !open && setRemoving(undefined)}
           title={`Remove “${removing?.title ?? ""}”?`}
-          description="It's removed from your library on every synced device, along with its bookmarks."
+          description="It's removed from your library on every synced device, along with its bookmarks and highlights."
           confirm="Remove"
           onConfirm={() => removing && void remove(removing)}
         />
@@ -204,7 +244,10 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
         {books.length === 0 ? (
           <div className="px-4 py-16 text-center">
             <p className="mb-1 text-xl">No books yet.</p>
-            <p className="text-muted-foreground">Add a PDF or EPUB. With sync on, it will appear on your other device too.</p>
+            <p className="text-muted-foreground">
+              Add a PDF or EPUB{status?.platform === "desktop" && ", or drop one here"}. With sync on, it will appear on your
+              other device too.
+            </p>
           </div>
         ) : (
           <ul className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
@@ -251,7 +294,25 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
             ))}
           </ul>
         )}
-        <footer className="mt-8 flex justify-center">
+        <footer className="mt-8 flex flex-wrap items-center justify-center gap-x-1 gap-y-2">
+          {status && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="max-w-full min-w-0 text-muted-foreground"
+              onClick={() => setShowSync(true)}
+              aria-haspopup="dialog"
+              aria-label={`Sync: ${statusLine(status).text}`}
+            >
+              <span className={cn("dot", statusLine(status).tone)} />
+              <span className="truncate">{statusLine(status).text}</span>
+            </Button>
+          )}
+          {status && (
+            <span className="text-muted-foreground" aria-hidden="true">
+              ·
+            </span>
+          )}
           <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => setShowAbout(true)}>
             <Info />
             About Reader

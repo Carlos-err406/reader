@@ -41,6 +41,17 @@ export function App() {
     };
   }, []);
 
+  // A file dropped where nothing takes it (the reader, say) must not replace the app with it.
+  useEffect(() => {
+    const ignore = (e: DragEvent) => e.dataTransfer?.types.includes("Files") && e.preventDefault();
+    window.addEventListener("dragover", ignore);
+    window.addEventListener("drop", ignore);
+    return () => {
+      window.removeEventListener("dragover", ignore);
+      window.removeEventListener("drop", ignore);
+    };
+  }, []);
+
   // Android's back button walks history, so the reader is a history entry.
   useEffect(() => {
     // Backing out of a panel inside the reader lands on the reader's own entry: stay there.
