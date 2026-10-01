@@ -4,7 +4,7 @@ import type { HighlightColor } from "./api";
 import { pdfjs } from "./pdf";
 import { pdfPage, pdfPosition } from "./format";
 import { attachPinch, MAX_ZOOM, MIN_ZOOM, type Focal } from "./pinch";
-import { isPageTap, type TocEntry, type ViewerHandle, type ViewerProps } from "./viewer";
+import { GLIDE, isPageTap, type TocEntry, type ViewerHandle, type ViewerProps } from "./viewer";
 import { attachTextLayer } from "./pdfText";
 import {
   byAge,
@@ -401,6 +401,7 @@ function PdfPages({ doc, page, setPage, dark, zoom, handle, onPageClick, onPinch
     () => ({
       next: () => setPage((p) => Math.min(p + 1, pages)),
       prev: () => setPage((p) => Math.max(p - 1, 1)),
+      glide: (forward) => setPage((p) => Math.min(Math.max(p + (forward ? 1 : -1), 1), pages)),
       goTo: (location) => setPage(pdfPage(location, pages)),
     }),
     [pages, setPage],
@@ -525,6 +526,8 @@ function PdfScroll({
     () => ({
       next: () => frame.current?.scrollBy({ top: frame.current.clientHeight * 0.9, behavior: "smooth" }),
       prev: () => frame.current?.scrollBy({ top: -frame.current.clientHeight * 0.9, behavior: "smooth" }),
+      glide: (forward) =>
+        frame.current?.scrollBy({ top: (forward ? 1 : -1) * frame.current.clientHeight * GLIDE, behavior: "smooth" }),
       goTo: (location) => {
         const target = pdfPage(location, doc.numPages);
         frame.current?.scrollTo({ top: tops[target - 1]! - GAP, behavior: "smooth" });

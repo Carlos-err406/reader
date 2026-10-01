@@ -3,7 +3,7 @@ import ePub, { EpubCFI, type Book, type Contents, type NavItem, type Rendition }
 import type { Highlight } from "./api";
 import { byAge, highlightCss, highlightName, SWATCHES, type Rect, type TextSelection } from "./highlights";
 import { epubLabel } from "./format";
-import { isPageTap, type TocEntry, type ViewerHandle, type ViewerProps } from "./viewer";
+import { GLIDE, isPageTap, type TocEntry, type ViewerHandle, type ViewerProps } from "./viewer";
 import { stripActiveContent } from "./sanitize";
 import { attachPinch, type Focal } from "./pinch";
 import { clampSize } from "./display";
@@ -770,6 +770,13 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
     return {
       next: () => navigate(true, (v) => v.next()),
       prev: () => navigate(true, (v) => v.prev()),
+      glide: (forward) => {
+        const box = (rendition.current as unknown as { manager?: { container?: HTMLElement } } | undefined)?.manager?.container;
+        if (layout !== "scroll" || !box) return navigate(true, (v) => (forward ? v.next() : v.prev()));
+        // The reader moved: where it lands is saved, like scrolling by hand.
+        inputUntil.current = Date.now() + 1500;
+        box.scrollBy({ top: (forward ? 1 : -1) * box.clientHeight * GLIDE, behavior: "smooth" });
+      },
       // Following another device: show where it is, like opening at a synced spot.
       goTo: (location, save = true) =>
         navigate(save, (v) => v.display(location).then(() => void (!save && mark(v, location)))),

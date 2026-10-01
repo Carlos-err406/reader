@@ -209,8 +209,7 @@ export function Reader({ book, at, onClose }: Props) {
     if (desktop || !display.volumeKeys) return;
     const keys = new Channel<{ turn: "next" | "previous" }>((e) => {
       stir.current();
-      if (e.turn === "next") viewer.current?.next();
-      else viewer.current?.prev();
+      viewer.current?.glide(e.turn === "next");
     });
     void api.volumeKeys(true, keys).catch(() => {});
     return () => void api.volumeKeys(false, keys).catch(() => {});

@@ -77,9 +77,17 @@ export function isPageTap(event: MouseEvent): boolean {
   return !selection || selection.isCollapsed;
 }
 
+/**
+ * How far one press of a volume button moves the scroll layout, as a share of the screen:
+ * less than a screen, so the last lines read stay in view to pick up from.
+ */
+export const GLIDE = 0.65;
+
 export interface ViewerHandle {
   next(): void;
   prev(): void;
+  /** The volume buttons' turn: in the scroll layout a smooth `GLIDE` of a screen; a page otherwise. */
+  glide(forward: boolean): void;
   /** `save: false` when following another device, so its exact position is kept. */
   goTo(location: string, save?: boolean): void;
 }
