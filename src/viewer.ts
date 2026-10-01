@@ -2,6 +2,31 @@ import type { Highlight, Position } from "./api";
 import type { Layout } from "./display";
 import type { Rect, TextSelection } from "./highlights";
 
+/** A table-of-contents entry. */
+export interface TocEntry {
+  label: string;
+  /** Where it goes, for `goTo`. */
+  location: string;
+  /** Nesting: 0 for chapters, 1 for their sections, and so on. */
+  depth: number;
+  /** Where it starts in the book (0 to 1), to show how far in it is. */
+  at: number;
+  /** The section (EPUB) or page (PDF) it starts in, to find the one being read. */
+  order: number;
+  /** PDFs: the page it starts on. */
+  page?: number;
+}
+
+/**
+ * The entry being read: the last one starting at or before the reader's section or page.
+ * Entries in the same section share it, so the first of them (the chapter) stands for it.
+ */
+export function currentEntry(entries: TocEntry[], place: number): number {
+  let best = -1;
+  for (const e of entries) if (e.order <= place && e.order > best) best = e.order;
+  return best < 0 ? -1 : entries.findIndex((e) => e.order === best);
+}
+
 export interface ViewerProps {
   /** The book id, for per-book caches. */
   id: string;
@@ -40,6 +65,8 @@ export interface ViewerProps {
   onSelect: (selection: TextSelection | null) => void;
   /** A tap landed on a highlight. */
   onHighlightTap: (id: string, rect: Rect) => void;
+  /** The book's table of contents, once known (empty when it has none). */
+  onContents: (entries: TocEntry[]) => void;
 }
 
 /** Taps on links or while selecting text are for the book, not for the controls. */

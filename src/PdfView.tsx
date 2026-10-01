@@ -4,7 +4,7 @@ import type { HighlightColor } from "./api";
 import { pdfjs } from "./pdf";
 import { pdfPage, pdfPosition } from "./format";
 import { attachPinch, MAX_ZOOM, MIN_ZOOM, type Focal } from "./pinch";
-import { isPageTap, type ViewerHandle, type ViewerProps } from "./viewer";
+import { isPageTap, type TocEntry, type ViewerHandle, type ViewerProps } from "./viewer";
 import { attachTextLayer } from "./pdfText";
 import {
   byAge,
@@ -19,6 +19,34 @@ import {
 
 /** Keeps zoomed canvases within what phones can allocate. */
 const MAX_CANVAS = 4096;
+
+type Outline = Awaited<ReturnType<PDFDocumentProxy["getOutline"]>>;
+
+/** The document's outline (its bookmarks panel), each entry resolved to the page it opens. */
+async function tableOfContents(doc: PDFDocumentProxy): Promise<TocEntry[]> {
+  const entries: TocEntry[] = [];
+  const pageOf = async (dest: unknown): Promise<number | undefined> => {
+    try {
+      const explicit = typeof dest === "string" ? await doc.getDestination(dest) : dest;
+      const ref = Array.isArray(explicit) ? explicit[0] : undefined;
+      if (ref == null) return undefined;
+      const index = typeof ref === "number" ? ref : await doc.getPageIndex(ref);
+      return index + 1;
+    } catch {
+      return undefined;
+    }
+  };
+  const walk = async (items: Outline, depth: number) => {
+    for (const item of items ?? []) {
+      const page = await pageOf(item.dest);
+      const label = item.title.replace(/\s+/g, " ").trim();
+      if (page && label) entries.push({ label, location: String(page), depth, at: page / doc.numPages, page, order: page });
+      await walk(item.items, depth + 1);
+    }
+  };
+  await walk(await doc.getOutline(), 0);
+  return entries;
+}
 
 /** One marked rectangle of a highlight on a page: x, y, width and height as fractions of it. */
 interface Mark {
@@ -201,7 +229,7 @@ function usePinch(
 }
 
 export const PdfView = forwardRef<ViewerHandle, ViewerProps>(function PdfView(
-  { data, initial, layout, dark, zoom, onMove, onError, onTap, onPinch, highlights, onSelect, onHighlightTap },
+  { data, initial, layout, dark, zoom, onMove, onError, onTap, onPinch, highlights, onSelect, onHighlightTap, onContents },
   ref,
 ) {
   const [doc, setDoc] = useState<PDFDocumentProxy>();
@@ -224,6 +252,7 @@ export const PdfView = forwardRef<ViewerHandle, ViewerProps>(function PdfView(
         setAspects(ratios);
         setDoc(loaded);
         setPage(pdfPage(initial, loaded.numPages));
+        void tableOfContents(loaded).then((entries) => !cancelled && onContents(entries), () => !cancelled && onContents([]));
         let differs = false;
         for (let n = 2; n <= loaded.numPages && !cancelled; n++) {
           const v = (await loaded.getPage(n)).getViewport({ scale: 1 });
@@ -474,6 +503,8 @@ function PdfScroll({
         if (y <= probe) reading = i + 1;
         if (y + aspects[i]! * width > top - height && y < top + 2 * height) nearby.add(i + 1);
       });
+      // Scrolled to the very end, the last pages can't reach the probe: the reader is on the last.
+      if (top > 0 && top + height >= el.scrollHeight - 2) reading = tops.length;
       setNear((old) => (old.size === nearby.size && [...nearby].every((n) => old.has(n)) ? old : nearby));
       if (placed.current && reading !== current.current) {
         current.current = reading;

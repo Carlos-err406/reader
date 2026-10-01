@@ -10,9 +10,9 @@ import {
   type Position,
   type Progress,
 } from "./api";
-import { EpubView } from "./EpubView";
+import { EpubView, sectionOf } from "./EpubView";
 import { PdfView } from "./PdfView";
-import type { ViewerHandle } from "./viewer";
+import type { TocEntry, ViewerHandle } from "./viewer";
 import { DisplaySheet } from "./DisplaySheet";
 import { pageCss, SIZES, stepSize } from "./display";
 import { clampZoom, stepZoom } from "./pinch";
@@ -60,6 +60,8 @@ export function Reader({ book, at, onClose }: Props) {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [favorite, setFavorite] = useState(book.favorite);
   const [highlights, setHighlights] = useState<Highlight[]>([]);
+  // The table of contents: null until the book has been read for it.
+  const [contents, setContents] = useState<TocEntry[] | null>(null);
   // Selected text offered for highlighting, or a highlight that was tapped.
   const [selection, setSelection] = useState<TextSelection | null>(null);
   const [menu, setMenu] = useState<{ id: string; rect: Rect } | null>(null);
@@ -249,6 +251,7 @@ export function Reader({ book, at, onClose }: Props) {
     if (s) setMenu(null);
   }, []);
   const onHighlightTap = useCallback((id: string, rect: Rect) => setMenu({ id, rect }), []);
+  const onContents = useCallback((entries: TocEntry[]) => setContents(entries), []);
 
   const refreshHighlights = () => api.highlights(book.id).then(setHighlights);
   const attempt = async (work: () => Promise<unknown>) => {
@@ -320,6 +323,9 @@ export function Reader({ book, at, onClose }: Props) {
   const View = book.format === "pdf" ? PdfView : EpubView;
 
   const fraction = position?.fraction ?? initial?.fraction ?? 0;
+  // The page (PDF) or section (EPUB) being read, to mark the chapter in the contents.
+  const here = position?.location ?? initial?.location;
+  const place = !here ? 0 : pdf ? Number.parseInt(here, 10) || 1 : sectionOf(here);
 
   return (
     <div className="relative h-full overflow-hidden bg-card">
@@ -346,6 +352,7 @@ export function Reader({ book, at, onClose }: Props) {
             highlights={highlights}
             onSelect={onSelect}
             onHighlightTap={onHighlightTap}
+            onContents={onContents}
           />
         )}
         {display.layout === "pages" && (
@@ -391,7 +398,7 @@ export function Reader({ book, at, onClose }: Props) {
         <Button variant="ghost" size="icon-lg" onClick={() => setShowDisplay(true)} aria-label="Display settings">
           <Type className="size-5" />
         </Button>
-        <Button variant="ghost" size="icon-lg" onClick={() => setPanel(true)} aria-label="Highlights and bookmarks">
+        <Button variant="ghost" size="icon-lg" onClick={() => setPanel(true)} aria-label="Contents, highlights and bookmarks">
           <List className="size-5" />
         </Button>
         {desktop && (
@@ -509,6 +516,10 @@ export function Reader({ book, at, onClose }: Props) {
       <MarksPanel
         open={panel}
         onOpenChange={setPanel}
+        title={book.title}
+        pdf={pdf}
+        contents={contents}
+        place={place}
         bookmarks={bookmarks}
         highlights={highlights}
         onJump={(location) => jump(location)}

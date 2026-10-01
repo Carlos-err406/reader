@@ -3,7 +3,7 @@ import ePub, { EpubCFI, type Book, type Contents, type NavItem, type Rendition }
 import type { Highlight } from "./api";
 import { byAge, highlightCss, highlightName, SWATCHES, type Rect, type TextSelection } from "./highlights";
 import { epubLabel } from "./format";
-import { isPageTap, type ViewerHandle, type ViewerProps } from "./viewer";
+import { isPageTap, type TocEntry, type ViewerHandle, type ViewerProps } from "./viewer";
 import { stripActiveContent } from "./sanitize";
 import { attachPinch, type Focal } from "./pinch";
 import { clampSize } from "./display";
@@ -23,6 +23,102 @@ function chapterOf(book: Book, href: string): string | undefined {
     const target = item.href.split("#")[0];
     return target === path || path.endsWith(target) || target.endsWith(path);
   })?.label;
+}
+
+/** The section a position (a CFI) is in, or -1. */
+export function sectionOf(cfi: string): number {
+  try {
+    return new EpubCFI(cfi).spinePos;
+  } catch {
+    return -1;
+  }
+}
+
+/** The spine section a contents link points to. Links are relative to the contents file, so the
+ * paths only need to end alike. */
+function sectionFor(book: Book, href: string): { index: number; href: string } | undefined {
+  const path = decodeURI(href.split("#")[0] ?? "");
+  const spine = book.spine as unknown as { length: number; get: (i: number) => { index: number; href: string } | null };
+  for (let i = 0; i < spine.length; i++) {
+    const section = spine.get(i);
+    if (!section) continue;
+    const own = decodeURI(section.href);
+    if (own === path || own.endsWith(`/${path}`) || path.endsWith(`/${own}`) || own.endsWith(path)) return section;
+  }
+  return undefined;
+}
+
+/** The book's contents, flattened in reading order, placed in the book by section. */
+function tableOfContents(book: Book, spans: Span[]): TocEntry[] {
+  const entries: TocEntry[] = [];
+  const walk = (items: NavItem[], depth: number) => {
+    for (const item of items) {
+      const section = sectionFor(book, item.href);
+      const label = words(item.label);
+      if (section && label) {
+        const fragment = item.href.split("#")[1];
+        entries.push({
+          label,
+          // A section by its number (epub.js can't look up the first one by name); a part of a
+          // section by its address in it.
+          location: fragment ? `${section.href}#${fragment}` : String(section.index),
+          depth,
+          at: spans.length ? toBook(spans, section.index, 0) : 0,
+          order: section.index,
+        });
+      }
+      walk(item.subitems ?? [], depth + 1);
+    }
+  };
+  walk(book.navigation?.toc ?? [], 0);
+  return entries;
+}
+
+const words = (text: string | null) => (text ?? "").replace(/\s+/g, " ").trim();
+
+/**
+ * A section's title when the book doesn't list it: the short headings or bold lines it opens
+ * with ("Chapter 4", "Building your wealth"), up to two of them. A section that opens with body
+ * text continues the one before (converters split long chapters), so it has none.
+ */
+export function openingTitle(root: Element): string | undefined {
+  const picks: string[] = [];
+  const blocks = root.querySelectorAll("h1, h2, h3, h4, h5, h6, p, div, li");
+  let looked = 0;
+  for (const el of blocks) {
+    // Innermost blocks only; their text is what a reader sees as a line.
+    if (el.querySelector("h1, h2, h3, h4, h5, h6, p, div, li")) continue;
+    const text = words(el.textContent);
+    // Blank lines and ornaments (". . . .", "* * *") aren't titles.
+    if (!/[\p{L}\p{N}]/u.test(text)) continue;
+    const bold = [...el.querySelectorAll("b, strong, .bold")].some((b) => words(b.textContent) === text);
+    const heading = /^H[1-6]$/i.test(el.tagName) || bold;
+    if (!heading || text.length > 90) break;
+    picks.push(text);
+    if (picks.length === 2 || ++looked > 6) break;
+  }
+  return picks.length ? picks.join(" · ") : undefined;
+}
+
+/** Contents made from each section's opening title, for books whose own list is a stub. */
+async function headingContents(book: Book, spans: Span[], alive: () => boolean): Promise<TocEntry[]> {
+  const spine = book.spine as unknown as { length: number; get: (i: number) => { href: string } | null };
+  const entries: TocEntry[] = [];
+  for (let i = 0; i < spine.length && alive(); i++) {
+    const section = spine.get(i);
+    if (!section) continue;
+    try {
+      // Read straight from the book's archive: the renderer's own section objects are left alone.
+      const doc = (await book.load(section.href)) as unknown as Document;
+      const label = openingTitle(doc.body ?? doc.documentElement);
+      if (label && label !== entries[entries.length - 1]?.label) {
+        entries.push({ label, location: String(i), depth: 0, at: spans.length ? toBook(spans, i, 0) : 0, order: i });
+      }
+    } catch {
+      // An unreadable section: no title from it.
+    }
+  }
+  return entries;
 }
 
 /** The text starting at `start`, about `length` characters long, ending on a word boundary. */
@@ -167,7 +263,7 @@ function hitHighlight(doc: Document, x: number, y: number): Painted | undefined 
 }
 
 export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
-  { id, data, initial, resume, layout, css, cssFor, textSize, dark, onMove, onError, onTap, onTextSize, highlights, onSelect, onHighlightTap },
+  { id, data, initial, resume, layout, css, cssFor, textSize, dark, onMove, onError, onTap, onTextSize, highlights, onSelect, onHighlightTap, onContents },
   ref,
 ) {
   const host = useRef<HTMLDivElement>(null);
@@ -200,6 +296,8 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
   selected.current = onSelect;
   const tappedMark = useRef(onHighlightTap);
   tappedMark.current = onHighlightTap;
+  const contentsFound = useRef(onContents);
+  contentsFound.current = onContents;
   const sizeChanged = useRef(onTextSize);
   sizeChanged.current = onTextSize;
   const size = useRef(textSize);
@@ -225,6 +323,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
     if (!host.current) return;
     const element = host.current;
     const book = ePub(data.slice(0));
+    let alive = true;
     book.spine.hooks.content.register((doc: Document) => stripActiveContent(doc));
 
     // A stage is one epub.js rendition in its own layer. Far seeks render into a hidden stage
@@ -621,6 +720,15 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
           (book.spine as unknown as { length: number }).length,
         );
         report(false);
+        await book.loaded.navigation;
+        const listed = tableOfContents(book, spans.current);
+        contentsFound.current(listed);
+        // A list of one or two entries is a stub (common in converted books): use the titles
+        // the sections open with instead, if that finds more.
+        if (listed.length < 3 && (book.spine as unknown as { length: number }).length >= 3) {
+          const found = await headingContents(book, spans.current, () => alive);
+          if (alive && found.length > listed.length) contentsFound.current(found);
+        }
       })
       .catch(onError);
 
@@ -635,6 +743,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       clearMark.current = () => {};
       if (selection) selected.current(null);
       rendition.current = undefined;
+      alive = false;
       pending?.destroy();
       active.destroy();
       try {
