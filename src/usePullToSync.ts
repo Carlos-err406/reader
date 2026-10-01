@@ -13,8 +13,10 @@ export function usePullToSync(onSync: () => void, enabled: boolean): number {
     let startY: number | null = null;
     let distance = 0;
     const start = (e: TouchEvent) => {
-      // Only a drag that begins at the very top counts, so normal scrolling is untouched.
-      startY = window.scrollY <= 0 && e.touches.length === 1 ? e.touches[0]!.clientY : null;
+      // Only a drag that begins at the very top counts, so normal scrolling is untouched. With a
+      // panel, dialog or menu open, the drag belongs to it (a panel closes when pulled down).
+      const covered = document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]');
+      startY = !covered && window.scrollY <= 0 && e.touches.length === 1 ? e.touches[0]!.clientY : null;
       distance = 0;
     };
     const move = (e: TouchEvent) => {
