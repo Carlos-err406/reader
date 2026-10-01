@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowUpDown,
   Check,
@@ -36,6 +36,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useMedia } from "@/hooks/useMedia";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { cn, swallowNextClick } from "@/lib/utils";
 import { api, message, onChanged as onRecordsChanged, type Book, type Collection, type Status } from "./api";
 import { ago, day, size, statusLine } from "./format";
@@ -142,6 +143,9 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
     return () => void unlisten.then((f) => f());
   }, [loadCollections]);
   const [filing, setFiling] = useState<Book[]>([]);
+  // Phones: the book whose action sheet is open.
+  const [acting, setActing] = useState<Book>();
+  const pointer = useMedia("(pointer: fine)");
   // Selecting books for one action on all of them; null when not selecting.
   const [selected, setSelected] = useState<Set<string> | null>(null);
   const selecting = selected !== null;
@@ -172,6 +176,9 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
     view.sort,
   );
   const actionsFor = (book: Book): BookActions => ({
+    onOpen: () => onOpen(book),
+    onSelect: () => setSelected(new Set([book.id])),
+    onSheet: wide ? undefined : () => setActing(book),
     onCollections: () => setFiling([book]),
     onFavorite: (on) => void mark(api.setFavorite(book.id, on)),
     onFinished: (on) => void mark(api.setFinished(book.id, on)),
@@ -626,6 +633,52 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
               }}
             />
             {status && <AboutSheet open={showAbout} onOpenChange={setShowAbout} platform={status.platform} />}
+            <Panel
+              open={!!acting}
+              onOpenChange={(open) => !open && setActing(undefined)}
+              title={acting?.title ?? ""}
+              description="What to do with this book"
+            >
+              {acting && (
+                <>
+                  <div className="flex items-center gap-3">
+                    <BadgedCover book={acting} />
+                    <div className="grid min-w-0 gap-1">
+                      {acting.author && <span className="truncate">{acting.author}</span>}
+                      <span className="flex items-center gap-1 truncate text-sm text-muted-foreground">{bookStatus(acting)}</span>
+                      {tagsOf(acting).length > 0 && (
+                        <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+                          <Tag className="size-3 shrink-0" />
+                          <span className="truncate">{tagsOf(acting).join(" · ")}</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <ul className="-mx-2 grid">
+                    {bookActions(acting, actionsFor(acting), true).map((a) => (
+                      <li key={a.id} className={cn(a.destructive && "mt-1 border-t pt-1")}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // The sheet closes first, so the next step (collections, a
+                            // confirmation) takes its place.
+                            setActing(undefined);
+                            a.run();
+                          }}
+                          className={cn(
+                            "flex h-12 w-full items-center gap-4 rounded-lg px-3 text-left text-base outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring [&_svg]:size-5",
+                            a.destructive ? "text-destructive" : "[&_svg]:text-muted-foreground",
+                          )}
+                        >
+                          {a.icon}
+                          {a.label}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </Panel>
             <CollectionsSheet books={filing} onClose={() => setFiling([])} collections={collections ?? []} onChanged={loadCollections} />
             <NameDialog
               open={!!naming}
@@ -669,6 +722,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
                 tags={tagsOf(resume)}
                 onOpen={() => onOpen(resume)}
                 actions={actionsFor(resume)}
+                contextMenu={wide && pointer}
                 selection={selecting ? !!selected?.has(resume.id) : undefined}
                 onToggle={() => toggleSelected(resume)}
               />
@@ -701,6 +755,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
                       actions={actionsFor(book)}
                       selection={selecting ? !!selected?.has(book.id) : undefined}
                       onLongPress={(x, y) => startSweep(book, x, y)}
+                      contextMenu={wide && pointer}
                     />
                   ))}
                 </ul>
@@ -928,113 +983,179 @@ interface ContinueProps {
   tags: string[];
   onOpen: () => void;
   actions: BookActions;
+  contextMenu: boolean;
   /** While selecting books: whether this one is selected. */
   selection?: boolean;
   onToggle: () => void;
 }
 
-function ContinueCard({ book, tags, onOpen, actions, selection, onToggle }: ContinueProps) {
+function ContinueCard({ book, tags, onOpen, actions, selection, onToggle, contextMenu }: ContinueProps) {
   const percent = Math.round((book.progress?.fraction ?? 0) * 100);
   const selecting = selection !== undefined;
   return (
     <section aria-label="Continue reading" className="mb-6">
       <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Continue reading</h2>
       {/* The whole card opens the book (or, while selecting, selects it). */}
-      <div
-        className={cn(
-          "relative flex cursor-pointer gap-4 rounded-2xl border bg-card p-4 pr-10 transition-colors outline-none select-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring",
-          selection && "border-primary ring-2 ring-primary",
-        )}
-        role="button"
-        tabIndex={0}
-        aria-label={selecting ? book.title : `Continue reading ${book.title}`}
-        aria-pressed={selecting ? selection : undefined}
-        onClick={selecting ? onToggle : onOpen}
-        onKeyDown={(e) => {
-          if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
-          e.preventDefault();
-          (selecting ? onToggle : onOpen)();
-        }}
-      >
-        {!selecting && (
-          // Its menu (and the items in it, rendered elsewhere) mustn't also open the book.
-          <div className="contents" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-            <BookMenu book={book} actions={actions} />
-          </div>
-        )}
-        <span className="relative block shrink-0 self-start">
-          <BadgedCover book={book} large />
-          {selecting && <SelectMark on={!!selection} />}
-        </span>
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <strong className="line-clamp-2 font-serif text-xl leading-snug">{book.title}</strong>
-          {book.author && <span className="truncate text-sm">{book.author}</span>}
-          {book.progress && (
-            <span className="truncate text-sm text-muted-foreground">
-              {book.progress.label} · {ago(book.progress.updatedAt)}
-            </span>
+      <BookContextMenu book={book} actions={actions} enabled={contextMenu && !selecting}>
+        <div
+          className={cn(
+            "relative flex cursor-pointer gap-4 rounded-2xl border bg-card p-4 pr-10 transition-colors outline-none select-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring",
+            selection && "border-primary ring-2 ring-primary",
           )}
-          {tags.length > 0 && (
-            <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-              <Tag className="size-3 shrink-0" />
-              <span className="truncate">{tags.join(" · ")}</span>
-            </span>
-          )}
-          <div className="mt-auto flex items-center gap-3 pt-2">
-            <div className="meter flex-1">
-              <div style={{ width: `${percent}%` }} />
+          role="button"
+          tabIndex={0}
+          aria-label={selecting ? book.title : `Continue reading ${book.title}`}
+          aria-pressed={selecting ? selection : undefined}
+          onClick={selecting ? onToggle : onOpen}
+          onKeyDown={(e) => {
+            if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+            e.preventDefault();
+            (selecting ? onToggle : onOpen)();
+          }}
+        >
+          {!selecting && (
+            // Its menu (and the items in it, rendered elsewhere) mustn't also open the book.
+            <div className="contents" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+              <BookMenu book={book} actions={actions} />
             </div>
-            <span className="text-xs text-muted-foreground tabular-nums">{percent}%</span>
+          )}
+          <span className="relative block shrink-0 self-start">
+            <BadgedCover book={book} large />
+            {selecting && <SelectMark on={!!selection} />}
+          </span>
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <strong className="line-clamp-2 font-serif text-xl leading-snug">{book.title}</strong>
+            {book.author && <span className="truncate text-sm">{book.author}</span>}
+            {book.progress && (
+              <span className="truncate text-sm text-muted-foreground">
+                {book.progress.label} · {ago(book.progress.updatedAt)}
+              </span>
+            )}
+            {tags.length > 0 && (
+              <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+                <Tag className="size-3 shrink-0" />
+                <span className="truncate">{tags.join(" · ")}</span>
+              </span>
+            )}
+            <div className="mt-auto flex items-center gap-3 pt-2">
+              <div className="meter flex-1">
+                <div style={{ width: `${percent}%` }} />
+              </div>
+              <span className="text-xs text-muted-foreground tabular-nums">{percent}%</span>
+            </div>
           </div>
         </div>
-      </div>
+      </BookContextMenu>
     </section>
   );
 }
 
 interface BookActions {
+  onOpen: () => void;
   onCollections: () => void;
   onFavorite: (on: boolean) => void;
   onFinished: (on: boolean) => void;
+  /** Starts selecting books, with this one. */
+  onSelect: () => void;
   onRemove: () => void;
+  /** Phones: the ⋯ opens the book's action sheet instead of a menu. */
+  onSheet?: () => void;
 }
 
-/** A book's ⋯ menu: favorite, collections, finished, remove. */
+interface Action {
+  id: string;
+  icon: React.ReactNode;
+  label: string;
+  run: () => void;
+  destructive?: boolean;
+}
+
+/** What can be done with a book, in the order every menu shows it. */
+function bookActions(book: Book, a: BookActions, withOpen: boolean): Action[] {
+  return [
+    ...(withOpen && book.available ? [{ id: "open", icon: <BookOpen />, label: "Open", run: a.onOpen }] : []),
+    {
+      id: "favorite",
+      icon: book.favorite ? <StarOff /> : <Star />,
+      label: book.favorite ? "Remove from favorites" : "Add to favorites",
+      run: () => a.onFavorite(!book.favorite),
+    },
+    { id: "collections", icon: <Tag />, label: "Collections…", run: a.onCollections },
+    {
+      id: "finished",
+      icon: book.finishedAt ? <RotateCcw /> : <CircleCheck />,
+      label: book.finishedAt ? "Mark as not finished" : "Mark as finished",
+      run: () => a.onFinished(!book.finishedAt),
+    },
+    { id: "select", icon: <SquareCheck />, label: "Select", run: a.onSelect },
+    { id: "remove", icon: <Trash2 />, label: "Remove from library", run: a.onRemove, destructive: true },
+  ];
+}
+
+/** A book's ⋯: a menu on the Mac, the book's action sheet on phones. */
 function BookMenu({ book, actions }: { book: Book; actions: BookActions }) {
-  const { onCollections, onFavorite, onFinished, onRemove } = actions;
+  const trigger = (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      className="absolute top-1.5 right-1.5 text-muted-foreground"
+      aria-label={`More for ${book.title}`}
+      aria-haspopup={actions.onSheet ? "dialog" : "menu"}
+      onClick={actions.onSheet}
+    >
+      <EllipsisVertical />
+    </Button>
+  );
+  if (actions.onSheet) return trigger;
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="absolute top-1.5 right-1.5 text-muted-foreground"
-          aria-label={`More for ${book.title}`}
-        >
-          <EllipsisVertical />
-        </Button>
-      </DropdownMenuTrigger>
+      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="bg-card">
-        <DropdownMenuItem onSelect={() => onFavorite(!book.favorite)}>
-          {book.favorite ? <StarOff /> : <Star />}
-          {book.favorite ? "Remove from favorites" : "Add to favorites"}
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={onCollections}>
-          <Tag />
-          Collections…
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => onFinished(!book.finishedAt)}>
-          {book.finishedAt ? <RotateCcw /> : <CircleCheck />}
-          {book.finishedAt ? "Mark as not finished" : "Mark as finished"}
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem variant="destructive" onSelect={onRemove}>
-          <Trash2 />
-          Remove from library
-        </DropdownMenuItem>
+        {bookActions(book, actions, false).map((a) => (
+          <Fragment key={a.id}>
+            {a.destructive && <DropdownMenuSeparator />}
+            <DropdownMenuItem variant={a.destructive ? "destructive" : "default"} onSelect={a.run}>
+              {a.icon}
+              {a.label}
+            </DropdownMenuItem>
+          </Fragment>
+        ))}
       </DropdownMenuContent>
     </DropdownMenu>
   );
+}
+
+/** Right-clicking a book on the Mac opens its menu at the pointer. */
+function BookContextMenu({ book, actions, enabled, children }: { book: Book; actions: BookActions; enabled: boolean; children: React.ReactElement }) {
+  if (!enabled) return children;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuContent className="bg-card">
+        {bookActions(book, actions, true).map((a) => (
+          <Fragment key={a.id}>
+            {(a.destructive || a.id === "favorite") && <ContextMenuSeparator />}
+            <ContextMenuItem variant={a.destructive ? "destructive" : "default"} onSelect={a.run}>
+              {a.icon}
+              {a.label}
+            </ContextMenuItem>
+          </Fragment>
+        ))}
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
+/** The book's line under its author: downloading, finished, its place, or not started. */
+function bookStatus(book: Book): React.ReactNode {
+  if (!book.available) return "Downloading from your other device…";
+  if (book.finishedAt)
+    return (
+      <>
+        <CircleCheck className="size-3.5 shrink-0 text-ok" /> Finished {day(book.finishedAt)}
+      </>
+    );
+  return book.progress?.label ?? `Not started · ${size(book.size)}`;
 }
 
 interface CardProps {
@@ -1047,11 +1168,13 @@ interface CardProps {
   selection?: boolean;
   /** A long press on a touch screen starts selecting from this book, at the finger. */
   onLongPress: (x: number, y: number) => void;
+  /** Right-click opens the book's menu (a Mac with a mouse or trackpad). */
+  contextMenu: boolean;
 }
 
 const LONG_PRESS = 450;
 
-function BookCard({ book, tags, onOpen, actions, selection, onLongPress }: CardProps) {
+function BookCard({ book, tags, onOpen, actions, selection, onLongPress, contextMenu }: CardProps) {
   const fraction = book.finishedAt ? 1 : (book.progress?.fraction ?? 0);
   const selecting = selection !== undefined;
   const press = useRef<{ x: number; y: number; timer: ReturnType<typeof setTimeout>; fired: boolean } | null>(null);
@@ -1060,72 +1183,64 @@ function BookCard({ book, tags, onOpen, actions, selection, onLongPress }: CardP
   };
   return (
     <li className={cn("relative", !book.available && !selecting && "opacity-70")} data-book-id={book.id}>
-      <button
-        className={cn(
-          "flex w-full gap-3.5 rounded-xl border bg-card p-3 text-left transition-colors outline-none select-none [-webkit-touch-callout:none] hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring disabled:cursor-default disabled:hover:bg-card",
-          selection && "border-primary ring-2 ring-primary",
-        )}
-        aria-pressed={selecting ? selection : undefined}
-        onPointerDown={(e) => {
-          if (e.pointerType !== "touch") return;
-          const state = {
-            x: e.clientX,
-            y: e.clientY,
-            fired: false,
-            timer: setTimeout(() => {
-              state.fired = true;
-              navigator.vibrate?.(12);
-              onLongPress(state.x, state.y);
-            }, LONG_PRESS),
-          };
-          press.current = state;
-        }}
-        onPointerMove={(e) => {
-          const p = press.current;
-          if (p && Math.hypot(e.clientX - p.x, e.clientY - p.y) > 10) cancel();
-        }}
-        onPointerUp={cancel}
-        onPointerCancel={cancel}
-        onContextMenu={(e) => press.current && e.preventDefault()}
-        onClick={() => {
-          // The long press already acted; the click that follows it doesn't.
-          if (press.current?.fired) {
-            press.current = null;
-            return;
-          }
-          if (selecting || book.available) onOpen();
-        }}
-        disabled={!book.available && !selecting}
-      >
-        <span className="relative block shrink-0 self-start">
-          <BadgedCover book={book} />
-          {selecting && <SelectMark on={!!selection} />}
-        </span>
-        <div className="flex min-w-0 flex-1 flex-col gap-1 pr-7">
-          <strong className="line-clamp-2">{book.title}</strong>
-          {book.author && <span className="truncate text-sm">{book.author}</span>}
-          <span className="flex items-center gap-1 truncate text-sm text-muted-foreground">
-            {!book.available ? (
-              "Downloading from your other device…"
-            ) : book.finishedAt ? (
-              <>
-                <CircleCheck className="size-3.5 shrink-0 text-ok" /> Finished {day(book.finishedAt)}
-              </>
-            ) : (
-              (book.progress?.label ?? `Not started · ${size(book.size)}`)
-            )}
-          </span>
-          {tags.length > 0 && (
-            <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground" aria-label={`Collections: ${tags.join(", ")}`}>
-              <Tag className="size-3 shrink-0" />
-              <span className="truncate">{tags.join(" · ")}</span>
-            </span>
+      <BookContextMenu book={book} actions={actions} enabled={contextMenu && !selecting}>
+        <button
+          className={cn(
+            "flex w-full gap-3.5 rounded-xl border bg-card p-3 text-left transition-colors outline-none select-none [-webkit-touch-callout:none] hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring disabled:cursor-default disabled:hover:bg-card",
+            selection && "border-primary ring-2 ring-primary",
           )}
-          <div className="meter mt-auto">
-            <div style={{ width: `${Math.round(fraction * 100)}%` }} />
+          aria-pressed={selecting ? selection : undefined}
+          onPointerDown={(e) => {
+            if (e.pointerType !== "touch") return;
+            const state = {
+              x: e.clientX,
+              y: e.clientY,
+              fired: false,
+              timer: setTimeout(() => {
+                state.fired = true;
+                navigator.vibrate?.(12);
+                onLongPress(state.x, state.y);
+              }, LONG_PRESS),
+            };
+            press.current = state;
+          }}
+          onPointerMove={(e) => {
+            const p = press.current;
+            if (p && Math.hypot(e.clientX - p.x, e.clientY - p.y) > 10) cancel();
+          }}
+          onPointerUp={cancel}
+          onPointerCancel={cancel}
+          onContextMenu={(e) => press.current && e.preventDefault()}
+          onClick={() => {
+            // The long press already acted; the click that follows it doesn't.
+            if (press.current?.fired) {
+              press.current = null;
+              return;
+            }
+            if (selecting || book.available) onOpen();
+          }}
+          disabled={!book.available && !selecting}
+        >
+          <span className="relative block shrink-0 self-start">
+            <BadgedCover book={book} />
+            {selecting && <SelectMark on={!!selection} />}
+          </span>
+          <div className="flex min-w-0 flex-1 flex-col gap-1 pr-7">
+            <strong className="line-clamp-2">{book.title}</strong>
+            {book.author && <span className="truncate text-sm">{book.author}</span>}
+            <span className="flex items-center gap-1 truncate text-sm text-muted-foreground">{bookStatus(book)}</span>
+            {tags.length > 0 && (
+              <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground" aria-label={`Collections: ${tags.join(", ")}`}>
+                <Tag className="size-3 shrink-0" />
+                <span className="truncate">{tags.join(" · ")}</span>
+              </span>
+            )}
+            <div className="meter mt-auto">
+              <div style={{ width: `${Math.round(fraction * 100)}%` }} />
+            </div>
           </div>
-        </div>
-      </button>
+        </button>
+      </BookContextMenu>
       {!selecting && <BookMenu book={book} actions={actions} />}
     </li>
   );
