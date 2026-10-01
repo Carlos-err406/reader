@@ -58,7 +58,7 @@ import {
   type Sort,
 } from "./shelves";
 import { CollectionsSheet } from "./CollectionsSheet";
-import { NameDialog } from "@/components/NameDialog";
+import { NameSheet } from "@/components/NameSheet";
 import { Panel, useBackCloses } from "@/components/Panel";
 import { readMetadata } from "./metadata";
 import { cachedCover, loadCover, makeCover } from "./covers";
@@ -680,7 +680,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
               )}
             </Panel>
             <CollectionsSheet books={filing} onClose={() => setFiling([])} collections={collections ?? []} onChanged={loadCollections} />
-            <NameDialog
+            <NameSheet
               open={!!naming}
               onOpenChange={(open) => !open && setNaming(null)}
               title={naming?.rename ? "Rename collection" : "New collection"}

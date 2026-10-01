@@ -9,11 +9,13 @@ interface Props {
   title: string;
   /** Read by screen readers; not shown. */
   description: string;
+  /** Focus the first field on opening, keyboard and all: for sheets that exist to type into. */
+  focusField?: boolean;
   children: ReactNode;
 }
 
 /** A bottom sheet on phones and a side sheet on wide windows. Closes on outside click or Escape. */
-export function Panel({ open, onOpenChange, title, description, children }: Props) {
+export function Panel({ open, onOpenChange, title, description, focusField = false, children }: Props) {
   const wide = useMedia("(min-width: 640px)");
   useBackCloses(open, onOpenChange);
   const sheet = useRef<HTMLDivElement>(null);
@@ -27,7 +29,7 @@ export function Panel({ open, onOpenChange, title, description, children }: Prop
         // On a phone, focusing a text field would raise the keyboard over the sheet just for
         // opening it; focus the sheet itself until a field is tapped.
         onOpenAutoFocus={(e) => {
-          if (wide) return;
+          if (wide || focusField) return;
           e.preventDefault();
           sheet.current?.focus();
         }}
