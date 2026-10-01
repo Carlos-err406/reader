@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowUpDown,
+  Check,
   BookDashed,
   BookOpen,
   CircleCheck,
@@ -15,6 +16,8 @@ import {
   Star,
   StarOff,
   Pencil,
+  ChevronDown,
+  SquareCheck,
   Tag,
   Trash2,
   Type,
@@ -55,6 +58,7 @@ import {
 } from "./shelves";
 import { CollectionsSheet } from "./CollectionsSheet";
 import { NameDialog } from "@/components/NameDialog";
+import { Panel, useBackCloses } from "@/components/Panel";
 import { readMetadata } from "./metadata";
 import { cachedCover, loadCover, makeCover } from "./covers";
 import { SyncPanel } from "./SyncPanel";
@@ -137,7 +141,15 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
     });
     return () => void unlisten.then((f) => f());
   }, [loadCollections]);
-  const [filing, setFiling] = useState<Book>();
+  const [filing, setFiling] = useState<Book[]>([]);
+  // Selecting books for one action on all of them; null when not selecting.
+  const [selected, setSelected] = useState<Set<string> | null>(null);
+  const selecting = selected !== null;
+  useBackCloses(selecting, (on) => !on && setSelected(null));
+  const [removingMany, setRemovingMany] = useState<Book[]>([]);
+  // Phones keep everything but the books in one sheet, and search behind a button.
+  const [showMenu, setShowMenu] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [naming, setNaming] = useState<{ rename?: Collection } | null>(null);
   const [deleting, setDeleting] = useState<Collection>();
 
@@ -154,18 +166,49 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
   const tally = counts(books);
   const searching = query.trim().length > 0;
   // Continue reading leads All and Reading, unless searching; it isn't repeated in the list.
-  const resume = !searching && (section === "all" || section === "reading") ? continueReading(books) : undefined;
+  const resume = !searching && !selecting && (section === "all" || section === "reading") ? continueReading(books) : undefined;
   const shown = sortBooks(
     books.filter((b) => onShelf(b, section, collections ?? []) && matches(b, query) && b.id !== resume?.id),
     view.sort,
   );
   const actionsFor = (book: Book): BookActions => ({
-    onCollections: () => setFiling(book),
+    onCollections: () => setFiling([book]),
     onFavorite: (on) => void mark(api.setFavorite(book.id, on)),
     onFinished: (on) => void mark(api.setFinished(book.id, on)),
     onRemove: () => setRemoving(book),
   });
   const tagsOf = (book: Book) => (collections ?? []).filter((c) => c.books.includes(book.id)).map((c) => c.name);
+  const picked = books.filter((b) => selected?.has(b.id));
+  const toggleSelected = (book: Book) =>
+    setSelected((old) => {
+      const next = new Set(old ?? []);
+      if (next.has(book.id)) next.delete(book.id);
+      else next.add(book.id);
+      return next;
+    });
+  const allPicked = shown.length > 0 && shown.every((b) => selected?.has(b.id));
+  const favoritePicked = picked.length > 0 && picked.every((b) => b.favorite);
+  const favoriteMany = () => void mark(Promise.all(picked.map((b) => api.setFavorite(b.id, !favoritePicked))).then(() => {}));
+  const removeMany = async (list: Book[]) => {
+    for (const b of list) await remove(b);
+    setSelected(null);
+  };
+  useEffect(() => {
+    if (!selecting) return;
+    const keys = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]')) return;
+      setSelected(null);
+    };
+    // Capturing runs before an open sheet's own Escape handling, while it's still on screen.
+    window.addEventListener("keydown", keys, { capture: true });
+    return () => window.removeEventListener("keydown", keys, { capture: true });
+  }, [selecting]);
+  const attention = status && ["warn", "error"].includes(statusLine(status).tone);
+  const pick = (shelf: Shelf) => {
+    setView({ section: shelf });
+    setShowMenu(false);
+  };
+
   const saveName = async (name: string) => {
     if (naming?.rename) await api.renameCollection(naming.rename.id, name);
     else setView({ section: collectionShelf((await api.createCollection(name)).id) });
@@ -265,6 +308,23 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
     }
   };
 
+  const nav = (onPicked: (shelf: Shelf) => void, then: (open: () => void) => void) => (
+    <ShelfNav
+      section={section}
+      tally={tally}
+      collections={collections}
+      highlights={status?.library.highlights ?? 0}
+      onPick={onPicked}
+      onNewCollection={() => then(() => setNaming({}))}
+      onHighlights={() => then(() => setShowHighlights(true))}
+    />
+  );
+  // From the phone's sheet: close it, then open what was picked in its place.
+  const fromMenu = (open: () => void) => {
+    setShowMenu(false);
+    open();
+  };
+
   return (
     <>
       {dropping && (
@@ -287,6 +347,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
         className={cn(
           "library mx-auto max-w-6xl px-4 pt-[calc(env(safe-area-inset-top)+0.75rem)] pb-[calc(env(safe-area-inset-bottom)+2rem)]",
           !pull && "settling",
+          selecting && "pb-[calc(env(safe-area-inset-bottom)+6rem)]",
         )}
         style={offset ? { transform: `translateY(${offset}px)` } : undefined}
       >
@@ -294,68 +355,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
           {wide && (
             <aside className="sticky top-4 w-52 shrink-0 self-start pt-2" aria-label="Library sections">
               <h1 className="mb-4 px-3 font-serif text-3xl font-semibold">Library</h1>
-              <nav className="grid gap-0.5">
-                {SECTIONS.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    aria-current={section === s.id ? "page" : undefined}
-                    onClick={() => setView({ section: s.id })}
-                    className={cn(
-                      "flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring",
-                      section === s.id && "bg-accent font-semibold",
-                    )}
-                  >
-                    <SectionIcon section={s.id} />
-                    <span className="flex-1">{s.name}</span>
-                    <span className="text-xs text-muted-foreground tabular-nums">{tally[s.id]}</span>
-                  </button>
-                ))}
-                <div className="mt-4 mb-1 flex items-center justify-between px-3">
-                  <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Collections</h3>
-                  <Button variant="ghost" size="icon-sm" className="-mr-2 size-7 text-muted-foreground" aria-label="New collection" onClick={() => setNaming({})}>
-                    <Plus />
-                  </Button>
-                </div>
-                {collections?.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    aria-current={section === collectionShelf(c.id) ? "page" : undefined}
-                    onClick={() => setView({ section: collectionShelf(c.id) })}
-                    className={cn(
-                      "flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring",
-                      section === collectionShelf(c.id) && "bg-accent font-semibold",
-                    )}
-                  >
-                    <Tag className="size-4 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate">{c.name}</span>
-                    <span className="text-xs text-muted-foreground tabular-nums">{c.books.length}</span>
-                  </button>
-                ))}
-                {collections?.length === 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setNaming({})}
-                    className="rounded-lg px-3 py-2 text-left text-sm text-muted-foreground outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring"
-                  >
-                    Group books into collections…
-                  </button>
-                )}
-                <div className="my-2 border-t" />
-                <button
-                  type="button"
-                  onClick={() => setShowHighlights(true)}
-                  aria-haspopup="dialog"
-                  className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring"
-                >
-                  <Highlighter className="size-4 text-muted-foreground" />
-                  <span className="flex-1">Highlights</span>
-                  {!!status?.library.highlights && (
-                    <span className="text-xs text-muted-foreground tabular-nums">{status.library.highlights}</span>
-                  )}
-                </button>
-              </nav>
+              {nav((shelf) => setView({ section: shelf }), (open) => open())}
             </aside>
           )}
 
@@ -367,28 +367,47 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
                   {opened && <CollectionMenu collection={opened} onRename={() => setNaming({ rename: opened })} onDelete={() => setDeleting(opened)} />}
                 </div>
               ) : (
-                <h1 className="flex-1 shrink-0 font-serif text-[1.55rem] font-semibold sm:text-3xl">Library</h1>
+                <div className="flex min-w-0 flex-1 items-center">
+                  <button
+                    type="button"
+                    onClick={() => setShowMenu(true)}
+                    aria-haspopup="dialog"
+                    aria-label={`${section === "all" ? "Library" : current.name}: sections, collections and settings${attention ? " (sync needs attention)" : ""}`}
+                    className="relative flex min-w-0 items-center gap-1 rounded-md text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
+                  >
+                    <h1 className="truncate font-serif text-[1.55rem] font-semibold">{section === "all" ? "Library" : current.name}</h1>
+                    <ChevronDown className="size-5 shrink-0 text-muted-foreground" />
+                    {attention && status && <span className={cn("dot absolute -top-0.5 -right-2", statusLine(status).tone)} />}
+                  </button>
+                  {opened && <CollectionMenu collection={opened} onRename={() => setNaming({ rename: opened })} onDelete={() => setDeleting(opened)} />}
+                </div>
               )}
-              <Button
-                variant="outline"
-                size="icon"
-                className="rounded-full bg-card"
-                onClick={() => setShowDisplay(true)}
-                aria-label="Display settings"
-              >
-                <Type />
-              </Button>
-              {!wide && (
+              {wide ? (
                 <Button
                   variant="outline"
                   size="icon"
                   className="rounded-full bg-card"
-                  onClick={() => setShowHighlights(true)}
-                  aria-haspopup="dialog"
-                  aria-label="Highlights"
+                  onClick={() => setShowDisplay(true)}
+                  aria-label="Display settings"
                 >
-                  <Highlighter />
+                  <Type />
                 </Button>
+              ) : (
+                books.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="rounded-full bg-card"
+                    onClick={() => {
+                      if (searchOpen) setQuery("");
+                      setSearchOpen(!searchOpen);
+                    }}
+                    aria-label="Search books"
+                    aria-pressed={searchOpen}
+                  >
+                    {searchOpen ? <X /> : <Search />}
+                  </Button>
+                )
               )}
               <Button
                 className="rounded-full max-sm:size-9 max-sm:px-0"
@@ -409,65 +428,14 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
               />
             </header>
 
-            {!wide && books.length > 0 && (
-              <div className="-mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none]" role="group" aria-label="Library sections">
-                {SECTIONS.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    aria-pressed={section === s.id}
-                    onClick={() => setView({ section: s.id })}
-                    className={cn(
-                      "flex h-8 shrink-0 items-center gap-1.5 rounded-full border bg-card px-3 text-sm whitespace-nowrap transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
-                      section === s.id && "border-primary bg-primary text-primary-foreground",
-                    )}
-                  >
-                    {s.id === "favorites" && <Star className="size-3.5" />}
-                    {s.id === "all" ? "All" : s.name}
-                    <span className={cn("tabular-nums opacity-70")}>{tally[s.id]}</span>
-                  </button>
-                ))}
-                {collections?.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    aria-pressed={section === collectionShelf(c.id)}
-                    onClick={() => setView({ section: collectionShelf(c.id) })}
-                    className={cn(
-                      "flex h-8 shrink-0 items-center gap-1.5 rounded-full border bg-card px-3 text-sm whitespace-nowrap transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
-                      section === collectionShelf(c.id) && "border-primary bg-primary text-primary-foreground",
-                    )}
-                  >
-                    <Tag className="size-3.5" />
-                    {c.name}
-                    <span className="tabular-nums opacity-70">{c.books.length}</span>
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => setNaming({})}
-                  className="flex h-8 shrink-0 items-center gap-1 rounded-full border border-dashed px-3 text-sm whitespace-nowrap text-muted-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
-                >
-                  <Plus className="size-3.5" />
-                  Collection
-                </button>
-              </div>
-            )}
-            {!wide && opened && (
-              <div className="mb-3 flex items-center gap-1">
-                <Tag className="size-4 text-muted-foreground" />
-                <strong className="min-w-0 truncate font-serif text-lg">{opened.name}</strong>
-                <CollectionMenu collection={opened} onRename={() => setNaming({ rename: opened })} onDelete={() => setDeleting(opened)} />
-              </div>
-            )}
-
-            {books.length > 0 && (
+            {books.length > 0 && (wide || searchOpen) && (
               <div className="mb-4 flex items-center gap-2">
                 <label className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-full border bg-card px-3 focus-within:ring-[3px] focus-within:ring-ring/50">
                   <Search className="size-4 shrink-0 text-muted-foreground" />
                   <input
                     type="search"
                     value={query}
+                    autoFocus={!wide}
                     onChange={(e) => setQuery(e.target.value)}
                     placeholder="Search titles and authors"
                     aria-label="Search books"
@@ -479,27 +447,88 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
                     </button>
                   )}
                 </label>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" className="h-9 shrink-0 rounded-full bg-card max-sm:w-9 max-sm:px-0" aria-label={`Sort: ${sortName}`}>
-                      <ArrowUpDown />
-                      <span className="max-sm:sr-only">{sortName}</span>
+                {wide && (
+                  <>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" className="h-9 shrink-0 rounded-full bg-card" aria-label={`Sort: ${sortName}`}>
+                          <ArrowUpDown />
+                          {sortName}
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="bg-card">
+                        <DropdownMenuLabel className="text-xs text-muted-foreground">Sort by</DropdownMenuLabel>
+                        <DropdownMenuRadioGroup value={view.sort} onValueChange={(sort) => setView({ sort: sort as Sort })}>
+                          {SORTS.map((s) => (
+                            <DropdownMenuRadioItem key={s.id} value={s.id}>
+                              {s.name}
+                            </DropdownMenuRadioItem>
+                          ))}
+                        </DropdownMenuRadioGroup>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <Button
+                      variant="outline"
+                      className="h-9 shrink-0 rounded-full bg-card"
+                      aria-pressed={selecting}
+                      onClick={() => setSelected(selecting ? null : new Set())}
+                    >
+                      <SquareCheck />
+                      {selecting ? "Done" : "Select"}
                     </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="bg-card">
-                    <DropdownMenuLabel className="text-xs text-muted-foreground">Sort by</DropdownMenuLabel>
-                    <DropdownMenuRadioGroup value={view.sort} onValueChange={(sort) => setView({ sort: sort as Sort })}>
-                      {SORTS.map((s) => (
-                        <DropdownMenuRadioItem key={s.id} value={s.id}>
-                          {s.name}
-                        </DropdownMenuRadioItem>
-                      ))}
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                  </>
+                )}
               </div>
             )}
 
+            {!wide && (
+              <Panel open={showMenu} onOpenChange={setShowMenu} title="Library" description="Sections, collections, sorting and settings">
+                {nav(pick, fromMenu)}
+                {books.length > 0 && (
+                  <section className="grid gap-1.5" aria-label="Sort by">
+                    <h3 className="px-3 text-xs font-semibold tracking-wide text-muted-foreground uppercase">Sort by</h3>
+                    <div className="flex flex-wrap gap-1.5 px-1">
+                      {SORTS.map((s) => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          aria-pressed={view.sort === s.id}
+                          onClick={() => setView({ sort: s.id })}
+                          className={cn(
+                            "h-8 rounded-full border bg-card px-3 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
+                            view.sort === s.id && "border-primary bg-primary text-primary-foreground",
+                          )}
+                        >
+                          {s.name}
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
+                <div className="-mx-1 grid gap-0.5 border-t pt-3">
+                  {books.length > 0 && (
+                    <MenuRow icon={<SquareCheck className="size-4" />} onClick={() => fromMenu(() => setSelected(new Set()))}>
+                      Select books
+                    </MenuRow>
+                  )}
+                  <MenuRow icon={<Type className="size-4" />} onClick={() => fromMenu(() => setShowDisplay(true))}>
+                    Display settings
+                  </MenuRow>
+                  {status && (
+                    <MenuRow
+                      icon={<span className={cn("dot", statusLine(status).tone)} />}
+                      detail={statusLine(status).text}
+                      onClick={() => fromMenu(() => setShowSync(true))}
+                    >
+                      Sync
+                    </MenuRow>
+                  )}
+                  <MenuRow icon={<Info className="size-4" />} onClick={() => fromMenu(() => setShowAbout(true))}>
+                    About Reader
+                  </MenuRow>
+                </div>
+              </Panel>
+            )}
             {status && <SyncPanel open={showSync} onOpenChange={setShowSync} status={status} onStatus={onStatus} />}
             <DisplaySheet open={showDisplay} onOpenChange={setShowDisplay} reading={false} />
             <HighlightsSheet
@@ -512,12 +541,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
               }}
             />
             {status && <AboutSheet open={showAbout} onOpenChange={setShowAbout} platform={status.platform} />}
-            <CollectionsSheet
-              book={filing}
-              onClose={() => setFiling(undefined)}
-              collections={collections ?? []}
-              onChanged={loadCollections}
-            />
+            <CollectionsSheet books={filing} onClose={() => setFiling([])} collections={collections ?? []} onChanged={loadCollections} />
             <NameDialog
               open={!!naming}
               onOpenChange={(open) => !open && setNaming(null)}
@@ -543,6 +567,14 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
               confirm="Remove"
               onConfirm={() => removing && void remove(removing)}
             />
+            <ConfirmDialog
+              open={removingMany.length > 0}
+              onOpenChange={(open) => !open && setRemovingMany([])}
+              title={`Remove ${removingMany.length} ${removingMany.length === 1 ? "book" : "books"}?`}
+              description="They're removed from your library on every synced device, along with their bookmarks and highlights."
+              confirm="Remove"
+              onConfirm={() => void removeMany(removingMany)}
+            />
             {status && <UpdateBanner platform={status.platform} />}
             {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
 
@@ -567,39 +599,178 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
                 {resume && <h2 className="mb-2 text-sm font-semibold text-muted-foreground">{current.id === "all" ? "All books" : current.name}</h2>}
                 <ul className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
                   {shown.map((book) => (
-                    <BookCard key={book.id} book={book} tags={tagsOf(book)} onOpen={() => onOpen(book)} actions={actionsFor(book)} />
+                    <BookCard
+                      key={book.id}
+                      book={book}
+                      tags={tagsOf(book)}
+                      onOpen={() => (selecting ? toggleSelected(book) : onOpen(book))}
+                      actions={actionsFor(book)}
+                      selection={selecting ? !!selected?.has(book.id) : undefined}
+                      onLongPress={() => {
+                        setSelected((old) => old ?? new Set());
+                        toggleSelected(book);
+                      }}
+                    />
                   ))}
                 </ul>
               </>
             )}
-            <footer className="mt-8 flex flex-wrap items-center justify-center gap-x-1 gap-y-2">
-              {status && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="max-w-full min-w-0 text-muted-foreground"
-                  onClick={() => setShowSync(true)}
-                  aria-haspopup="dialog"
-                  aria-label={`Sync: ${statusLine(status).text}`}
-                >
-                  <span className={cn("dot", statusLine(status).tone)} />
-                  <span className="truncate">{statusLine(status).text}</span>
+            {wide && (
+              <footer className="mt-8 flex flex-wrap items-center justify-center gap-x-1 gap-y-2">
+                {status && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="max-w-full min-w-0 text-muted-foreground"
+                    onClick={() => setShowSync(true)}
+                    aria-haspopup="dialog"
+                    aria-label={`Sync: ${statusLine(status).text}`}
+                  >
+                    <span className={cn("dot", statusLine(status).tone)} />
+                    <span className="truncate">{statusLine(status).text}</span>
+                  </Button>
+                )}
+                {status && (
+                  <span className="text-muted-foreground" aria-hidden="true">
+                    ·
+                  </span>
+                )}
+                <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => setShowAbout(true)}>
+                  <Info />
+                  About Reader
                 </Button>
-              )}
-              {status && (
-                <span className="text-muted-foreground" aria-hidden="true">
-                  ·
-                </span>
-              )}
-              <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => setShowAbout(true)}>
-                <Info />
-                About Reader
-              </Button>
-            </footer>
+              </footer>
+            )}
           </div>
         </div>
       </div>
+
+      {selecting && (
+        <div
+          role="toolbar"
+          aria-label="Selected books"
+          className="fixed inset-x-0 bottom-0 z-30 border-t bg-card/95 px-2 pt-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] shadow-[0_-4px_16px_rgba(0,0,0,0.08)] backdrop-blur"
+        >
+          <div className="mx-auto flex max-w-3xl items-center gap-1">
+            <Button variant="ghost" size="icon" aria-label="Done selecting" onClick={() => setSelected(null)}>
+              <X />
+            </Button>
+            <span className="min-w-0 flex-1 truncate text-sm font-medium" aria-live="polite">
+              {picked.length === 0 ? "Select books" : `${picked.length} selected`}
+            </span>
+            <Button variant="ghost" size="sm" onClick={() => setSelected(allPicked ? new Set() : new Set(shown.map((b) => b.id)))}>
+              {allPicked ? "None" : "All"}
+            </Button>
+            <Button variant="ghost" size={wide ? "sm" : "icon"} disabled={!picked.length} onClick={() => setFiling(picked)} aria-label="Add to collection">
+              <Tag />
+              {wide && "Collection"}
+            </Button>
+            <Button
+              variant="ghost"
+              size={wide ? "sm" : "icon"}
+              disabled={!picked.length}
+              onClick={favoriteMany}
+              aria-label={favoritePicked ? "Remove from favorites" : "Add to favorites"}
+            >
+              {favoritePicked ? <StarOff /> : <Star />}
+              {wide && (favoritePicked ? "Unfavorite" : "Favorite")}
+            </Button>
+            <Button
+              variant="ghost"
+              size={wide ? "sm" : "icon"}
+              className="text-destructive hover:text-destructive"
+              disabled={!picked.length}
+              onClick={() => setRemovingMany(picked)}
+              aria-label="Remove from library"
+            >
+              <Trash2 />
+              {wide && "Remove"}
+            </Button>
+          </div>
+        </div>
+      )}
     </>
+  );
+}
+
+function MenuRow({
+  icon,
+  detail,
+  onClick,
+  children,
+}: {
+  icon: React.ReactNode;
+  detail?: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring"
+    >
+      <span className="grid size-5 place-items-center text-muted-foreground">{icon}</span>
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+      {detail && <span className="max-w-[55%] truncate text-xs text-muted-foreground">{detail}</span>}
+    </button>
+  );
+}
+
+interface NavProps {
+  section: Shelf;
+  tally: Record<Section, number>;
+  collections: Collection[] | undefined;
+  highlights: number;
+  onPick: (shelf: Shelf) => void;
+  onNewCollection: () => void;
+  onHighlights: () => void;
+}
+
+/** Sections and collections with their counts: the Mac's sidebar and the phone's library sheet. */
+function ShelfNav({ section, tally, collections, highlights, onPick, onNewCollection, onHighlights }: NavProps) {
+  const row = (active: boolean) =>
+    cn(
+      "flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring",
+      active && "bg-accent font-semibold",
+    );
+  return (
+    <nav className="grid gap-0.5" aria-label="Library sections">
+      {SECTIONS.map((s) => (
+        <button key={s.id} type="button" aria-current={section === s.id ? "page" : undefined} onClick={() => onPick(s.id)} className={row(section === s.id)}>
+          <SectionIcon section={s.id} />
+          <span className="flex-1">{s.name}</span>
+          <span className="text-xs text-muted-foreground tabular-nums">{tally[s.id]}</span>
+        </button>
+      ))}
+      <div className="mt-4 mb-1 flex items-center justify-between px-3">
+        <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Collections</h3>
+        <Button variant="ghost" size="icon-sm" className="-mr-2 size-7 text-muted-foreground" aria-label="New collection" onClick={onNewCollection}>
+          <Plus />
+        </Button>
+      </div>
+      {collections?.map((c) => {
+        const shelf = collectionShelf(c.id);
+        return (
+          <button key={c.id} type="button" aria-current={section === shelf ? "page" : undefined} onClick={() => onPick(shelf)} className={row(section === shelf)}>
+            <Tag className="size-4 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate">{c.name}</span>
+            <span className="text-xs text-muted-foreground tabular-nums">{c.books.length}</span>
+          </button>
+        );
+      })}
+      {collections?.length === 0 && (
+        <button type="button" onClick={onNewCollection} className={cn(row(false), "text-muted-foreground")}>
+          Group books into collections…
+        </button>
+      )}
+      <div className="my-2 border-t" />
+      <button type="button" onClick={onHighlights} aria-haspopup="dialog" className={row(false)}>
+        <Highlighter className="size-4 text-muted-foreground" />
+        <span className="flex-1">Highlights</span>
+        {highlights > 0 && <span className="text-xs text-muted-foreground tabular-nums">{highlights}</span>}
+      </button>
+    </nav>
   );
 }
 
@@ -629,7 +800,7 @@ function CollectionMenu({ collection, onRename, onDelete }: { collection: Collec
 /** The cover, with a star on favorites. */
 function BadgedCover({ book, large }: { book: Book; large?: boolean }) {
   return (
-    <span className="relative shrink-0 self-start">
+    <span className="relative block shrink-0 self-start">
       <Cover book={book} large={large} />
       {book.favorite && (
         <span className="absolute -top-1.5 -right-1.5 grid size-6 place-items-center rounded-full bg-card shadow-sm">
@@ -735,18 +906,69 @@ interface CardProps {
   tags: string[];
   onOpen: () => void;
   actions: BookActions;
+  /** While selecting books: whether this one is selected. */
+  selection?: boolean;
+  /** A long press on a touch screen starts selecting, with this book. */
+  onLongPress: () => void;
 }
 
-function BookCard({ book, tags, onOpen, actions }: CardProps) {
+const LONG_PRESS = 450;
+
+function BookCard({ book, tags, onOpen, actions, selection, onLongPress }: CardProps) {
   const fraction = book.finishedAt ? 1 : (book.progress?.fraction ?? 0);
+  const selecting = selection !== undefined;
+  const press = useRef<{ x: number; y: number; timer: ReturnType<typeof setTimeout>; fired: boolean } | null>(null);
+  const cancel = () => {
+    if (press.current) clearTimeout(press.current.timer);
+  };
   return (
-    <li className={cn("relative", !book.available && "opacity-70")}>
+    <li className={cn("relative", !book.available && !selecting && "opacity-70")}>
       <button
-        className="flex w-full gap-3.5 rounded-xl border bg-card p-3 text-left transition-colors outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring disabled:cursor-default disabled:hover:bg-card"
-        onClick={() => book.available && onOpen()}
-        disabled={!book.available}
+        className={cn(
+          "flex w-full gap-3.5 rounded-xl border bg-card p-3 text-left transition-colors outline-none select-none [-webkit-touch-callout:none] hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring disabled:cursor-default disabled:hover:bg-card",
+          selection && "border-primary ring-2 ring-primary",
+        )}
+        aria-pressed={selecting ? selection : undefined}
+        onPointerDown={(e) => {
+          if (e.pointerType !== "touch") return;
+          const state = { x: e.clientX, y: e.clientY, fired: false, timer: setTimeout(() => {
+            state.fired = true;
+            navigator.vibrate?.(12);
+            onLongPress();
+          }, LONG_PRESS) };
+          press.current = state;
+        }}
+        onPointerMove={(e) => {
+          const p = press.current;
+          if (p && Math.hypot(e.clientX - p.x, e.clientY - p.y) > 10) cancel();
+        }}
+        onPointerUp={cancel}
+        onPointerCancel={cancel}
+        onContextMenu={(e) => press.current && e.preventDefault()}
+        onClick={() => {
+          // The long press already acted; the click that follows it doesn't.
+          if (press.current?.fired) {
+            press.current = null;
+            return;
+          }
+          if (selecting || book.available) onOpen();
+        }}
+        disabled={!book.available && !selecting}
       >
-        <BadgedCover book={book} />
+        <span className="relative block shrink-0 self-start">
+          <BadgedCover book={book} />
+          {selecting && (
+            <span
+              className={cn(
+                "absolute -top-1.5 -left-1.5 grid size-6 place-items-center rounded-full border-2 bg-card shadow-sm",
+                selection ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40",
+              )}
+              aria-hidden="true"
+            >
+              {selection && <Check className="size-3.5" strokeWidth={3} />}
+            </span>
+          )}
+        </span>
         <div className="flex min-w-0 flex-1 flex-col gap-1 pr-7">
           <strong className="line-clamp-2">{book.title}</strong>
           {book.author && <span className="truncate text-sm">{book.author}</span>}
@@ -772,7 +994,7 @@ function BookCard({ book, tags, onOpen, actions }: CardProps) {
           </div>
         </div>
       </button>
-      <BookMenu book={book} actions={actions} />
+      {!selecting && <BookMenu book={book} actions={actions} />}
     </li>
   );
 }

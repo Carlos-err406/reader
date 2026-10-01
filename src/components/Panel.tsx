@@ -50,25 +50,40 @@ export function Panel({ open, onOpenChange, title, description, children }: Prop
 }
 
 /**
- * Android's back button walks the history. An open panel is a history entry of its own, so
- * back closes the panel instead of leaving the book or the library underneath it.
+ * Android's back button walks the history. An open panel (or a mode like selecting books) is a
+ * history entry of its own, so back closes it instead of leaving the book or the library.
  */
-function useBackCloses(open: boolean, onOpenChange: (open: boolean) => void) {
+export function useBackCloses(open: boolean, onOpenChange: (open: boolean) => void) {
   const close = useRef(onOpenChange);
   close.current = onOpenChange;
   useEffect(() => {
     if (!open) return;
     const id = Math.random().toString(36).slice(2);
-    history.pushState({ ...history.state, panel: id }, "");
-    const back = () => close.current(false);
+    // One panel replacing another (a menu opening a settings sheet) takes over its entry.
+    if (leaving !== null) {
+      clearTimeout(leaving);
+      leaving = null;
+      history.replaceState({ ...history.state, panel: id }, "");
+    } else history.pushState({ ...history.state, panel: id }, "");
+    // Back closes this only when it leaves this entry: a panel opened on top of this one going
+    // back to it is no reason to close.
+    const back = () => history.state?.panel !== id && close.current(false);
     window.addEventListener("popstate", back);
     return () => {
       window.removeEventListener("popstate", back);
-      // Closed some other way (the X, a tap outside): drop the panel's entry.
-      if (history.state?.panel === id) history.back();
+      // Closed some other way (the X, a tap outside): drop the panel's entry, unless another
+      // panel opens right away and reuses it.
+      if (history.state?.panel === id) {
+        leaving = setTimeout(() => {
+          leaving = null;
+          history.back();
+        }, 0);
+      }
     };
   }, [open]);
 }
+
+let leaving: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * A bottom sheet follows a finger dragging it down, and closes when let go far or fast enough.
