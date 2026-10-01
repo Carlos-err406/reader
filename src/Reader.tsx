@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, message, onChanged, type Book, type Bookmark, type Position, type Progress } from "./api";
+import {
+  api,
+  message,
+  onChanged,
+  type Book,
+  type Bookmark,
+  type Highlight,
+  type HighlightColor,
+  type Position,
+  type Progress,
+} from "./api";
 import { EpubView } from "./EpubView";
 import { PdfView } from "./PdfView";
 import type { ViewerHandle } from "./viewer";
@@ -7,6 +17,9 @@ import { DisplaySheet } from "./DisplaySheet";
 import { pageCss, SIZES, stepSize } from "./display";
 import { clampZoom, stepZoom } from "./pinch";
 import { useDisplay } from "./useDisplay";
+import type { Rect, TextSelection } from "./highlights";
+import { HighlightToolbar } from "./HighlightToolbar";
+import { MarksPanel } from "./MarksPanel";
 import {
   Bookmark as BookmarkIcon,
   BookmarkCheck,
@@ -14,18 +27,18 @@ import {
   List,
   Maximize2,
   Minimize2,
-  Trash2,
   Type,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
 interface Props {
   book: Book;
+  /** Open here instead of at the saved position, e.g. a highlight picked in the library. */
+  at?: string;
   onClose: () => void;
 }
 
@@ -38,12 +51,16 @@ async function setFullscreen(on: boolean) {
   } catch {}
 }
 
-export function Reader({ book, onClose }: Props) {
+export function Reader({ book, at, onClose }: Props) {
   const [data, setData] = useState<ArrayBuffer>();
   const [initial, setInitial] = useState<Progress | null>();
   const [error, setError] = useState<string>();
   const [position, setPosition] = useState<Position>();
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [highlights, setHighlights] = useState<Highlight[]>([]);
+  // Selected text offered for highlighting, or a highlight that was tapped.
+  const [selection, setSelection] = useState<TextSelection | null>(null);
+  const [menu, setMenu] = useState<{ id: string; rect: Rect } | null>(null);
   const [remote, setRemote] = useState<Progress>();
   const [panel, setPanel] = useState(false);
   const [showDisplay, setShowDisplay] = useState(false);
@@ -113,12 +130,13 @@ export function Reader({ book, onClose }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.readBook(book.id), api.progress(book.id), api.bookmarks(book.id)]).then(
-      ([bytes, progress, marks]) => {
+    Promise.all([api.readBook(book.id), api.progress(book.id), api.bookmarks(book.id), api.highlights(book.id)]).then(
+      ([bytes, progress, marks, colored]) => {
         if (cancelled) return;
         setInitial(progress);
         saved.current = progress?.location;
         setBookmarks(marks);
+        setHighlights(colored);
         setData(bytes);
       },
       (e) => !cancelled && setError(message(e)),
@@ -140,6 +158,7 @@ export function Reader({ book, onClose }: Props) {
         });
       }
       if (changed.some((c) => c.kind === "bookmark")) void api.bookmarks(book.id).then(setBookmarks);
+      if (changed.some((c) => c.kind === "highlight")) void api.highlights(book.id).then(setHighlights);
     });
     return () => void unlisten.then((f) => f());
   }, [book.id, onClose]);
@@ -156,10 +175,26 @@ export function Reader({ book, onClose }: Props) {
     [],
   );
 
+  // A highlight's menu stays next to it only until the page moves.
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    document.addEventListener("scroll", close, { capture: true, passive: true });
+    return () => document.removeEventListener("scroll", close, { capture: true });
+  }, [menu]);
+  const floating = useRef(false);
+  floating.current = !!selection || !!menu;
+
   useEffect(() => {
     const keys = (e: KeyboardEvent) => {
       // An open panel, popover or menu owns the keyboard (Escape closes it, not the book).
       if (e.target instanceof HTMLInputElement || document.querySelector('[role="dialog"], [role="menu"]')) return;
+      if (e.key === "Escape" && floating.current) {
+        e.preventDefault();
+        setMenu(null);
+        setSelection((s) => (s?.clear(), null));
+        return;
+      }
       if (["ArrowRight", "PageDown", " "].includes(e.key)) viewer.current?.next();
       else if (["ArrowLeft", "PageUp"].includes(e.key)) viewer.current?.prev();
       else if (e.key === "Escape" && fullscreen) toggleFullscreen();
@@ -176,10 +211,12 @@ export function Reader({ book, onClose }: Props) {
   }, [onClose, fullscreen, toggleFullscreen, zoomStep, zoomReset]);
 
   const onMove = useCallback(
-    (p: Position, save: boolean) => {
+    (p: Position, moved: boolean) => {
       setPosition(p);
       const opening = !opened.current;
       opened.current = true;
+      // Opening at a highlight from the library is the reader going there.
+      const save = moved || (opening && !!at);
       if (!save) return;
       // Reading has started: get the controls out of the way. (A PDF's first page counts
       // as a saved position, so the very first report is only the book opening.)
@@ -191,11 +228,58 @@ export function Reader({ book, onClose }: Props) {
       setRemote(undefined);
       api.setProgress(book.id, p).catch((e) => setError(message(e)));
     },
-    [book.id],
+    [book.id, at],
   );
 
   const onError = useCallback((e: unknown) => setError(message(e)), []);
-  const onTap = useCallback(() => setChrome((shown) => !shown), []);
+  const onTap = useCallback(() => {
+    if (floating.current) {
+      setMenu(null);
+      return;
+    }
+    setChrome((shown) => !shown);
+  }, []);
+  const onSelect = useCallback((s: TextSelection | null) => {
+    setSelection(s);
+    if (s) setMenu(null);
+  }, []);
+  const onHighlightTap = useCallback((id: string, rect: Rect) => setMenu({ id, rect }), []);
+
+  const refreshHighlights = () => api.highlights(book.id).then(setHighlights);
+  const attempt = async (work: () => Promise<unknown>) => {
+    try {
+      await work();
+    } catch (e) {
+      setError(message(e));
+    }
+  };
+  const highlightSelection = (color: HighlightColor) => {
+    const s = selection;
+    if (!s) return;
+    void attempt(async () => {
+      await api.addHighlight(book.id, { location: s.location, text: s.text, color, label: s.label, fraction: s.fraction });
+      s.clear();
+      setSelection(null);
+      await refreshHighlights();
+    });
+  };
+  const recolor = (id: string, color: HighlightColor) =>
+    void attempt(async () => {
+      await api.recolorHighlight(id, color);
+      await refreshHighlights();
+    });
+  const removeHighlight = (id: string) =>
+    void attempt(async () => {
+      await api.removeHighlight(id);
+      setMenu(null);
+      await refreshHighlights();
+    });
+  const copy = (text: string) =>
+    void navigator.clipboard.writeText(text).then(
+      () => showBadge("Copied"),
+      () => setError("Couldn't copy the text"),
+    );
+  const tapped = menu ? highlights.find((h) => h.id === menu.id) : undefined;
 
   const marked = bookmarks.find((b) => b.location === position?.location);
   const toggleBookmark = async () => {
@@ -231,7 +315,8 @@ export function Reader({ book, onClose }: Props) {
             ref={viewer}
             id={book.id}
             data={data}
-            initial={initial?.location}
+            initial={at ?? initial?.location}
+            resume={!at}
             layout={display.layout}
             css={css}
             dark={dark}
@@ -243,6 +328,9 @@ export function Reader({ book, onClose }: Props) {
             cssFor={cssFor}
             textSize={display.size}
             onTextSize={onTextSize}
+            highlights={highlights}
+            onSelect={onSelect}
+            onHighlightTap={onHighlightTap}
           />
         )}
         {display.layout === "pages" && (
@@ -278,40 +366,9 @@ export function Reader({ book, onClose }: Props) {
         <Button variant="ghost" size="icon-lg" onClick={() => setShowDisplay(true)} aria-label="Display settings">
           <Type className="size-5" />
         </Button>
-        <Popover open={panel} onOpenChange={setPanel}>
-          <PopoverTrigger asChild>
-            <Button variant="ghost" size="icon-lg" aria-label="Bookmarks">
-              <List className="size-5" />
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent align="end" className="w-80 bg-card p-0">
-            <h2 className="border-b px-4 py-3 text-sm font-semibold">Bookmarks</h2>
-            {bookmarks.length === 0 ? (
-              <p className="px-4 py-4 text-sm text-muted-foreground">
-                Tap <BookmarkIcon className="inline size-4 align-text-bottom" /> to bookmark where you are.
-              </p>
-            ) : (
-              <ul className="max-h-80 overflow-y-auto py-1">
-                {bookmarks.map((b) => (
-                  <li key={b.id} className="flex items-center gap-1 px-2">
-                    <Button variant="ghost" className="min-w-0 flex-1 justify-start font-normal" onClick={() => jump(b.location)}>
-                      <span className="truncate">{b.label}</span>
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="text-muted-foreground"
-                      aria-label={`Delete bookmark ${b.label}`}
-                      onClick={() => api.removeBookmark(b.id).then(() => api.bookmarks(book.id)).then(setBookmarks)}
-                    >
-                      <Trash2 />
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </PopoverContent>
-        </Popover>
+        <Button variant="ghost" size="icon-lg" onClick={() => setPanel(true)} aria-label="Highlights and bookmarks">
+          <List className="size-5" />
+        </Button>
         {desktop && (
           <Button
             variant="ghost"
@@ -398,6 +455,43 @@ export function Reader({ book, onClose }: Props) {
         </div>
       )}
 
+      {selection && !menu && (
+        <HighlightToolbar
+          rect={selection.rect}
+          onPick={highlightSelection}
+          onCopy={() => {
+            copy(selection.text);
+            selection.clear();
+          }}
+        />
+      )}
+      {menu && tapped && (
+        <HighlightToolbar
+          rect={menu.rect}
+          current={tapped.color}
+          onPick={(color) => {
+            recolor(tapped.id, color);
+            setMenu(null);
+          }}
+          onCopy={() => {
+            copy(tapped.text);
+            setMenu(null);
+          }}
+          onRemove={() => removeHighlight(tapped.id)}
+        />
+      )}
+
+      <MarksPanel
+        open={panel}
+        onOpenChange={setPanel}
+        bookmarks={bookmarks}
+        highlights={highlights}
+        onJump={(location) => jump(location)}
+        onRemoveBookmark={(id) => void attempt(() => api.removeBookmark(id).then(() => api.bookmarks(book.id)).then(setBookmarks))}
+        onRecolor={recolor}
+        onRemoveHighlight={removeHighlight}
+        onCopy={copy}
+      />
       <DisplaySheet open={showDisplay} onOpenChange={setShowDisplay} reading />
     </div>
   );

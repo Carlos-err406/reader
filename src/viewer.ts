@@ -1,5 +1,6 @@
-import type { Position } from "./api";
+import type { Highlight, Position } from "./api";
 import type { Layout } from "./display";
+import type { Rect, TextSelection } from "./highlights";
 
 export interface ViewerProps {
   /** The book id, for per-book caches. */
@@ -7,6 +8,8 @@ export interface ViewerProps {
   data: ArrayBuffer;
   /** Where to open: the synced location, if any. */
   initial?: string;
+  /** `initial` is the reading position, so its words are marked for finding one's place. */
+  resume: boolean;
   layout: Layout;
   /** Page stylesheet for reflowable books (skin, font, size). */
   css: string;
@@ -31,6 +34,12 @@ export interface ViewerProps {
   onError: (error: unknown) => void;
   /** A tap on the page (not a drag, link or text selection): shows or hides the controls. */
   onTap: () => void;
+  /** This book's highlights, drawn over the text. */
+  highlights: Highlight[];
+  /** Text was selected (or the selection moved or went away: `null`). */
+  onSelect: (selection: TextSelection | null) => void;
+  /** A tap landed on a highlight. */
+  onHighlightTap: (id: string, rect: Rect) => void;
 }
 
 /** Taps on links or while selecting text are for the book, not for the controls. */

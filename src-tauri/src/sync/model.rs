@@ -48,6 +48,7 @@ pub enum Kind {
     Book,
     Progress,
     Bookmark,
+    Highlight,
 }
 
 impl Kind {
@@ -56,6 +57,7 @@ impl Kind {
             Kind::Book => "book",
             Kind::Progress => "progress",
             Kind::Bookmark => "bookmark",
+            Kind::Highlight => "highlight",
         }
     }
 
@@ -64,6 +66,7 @@ impl Kind {
             "book" => Ok(Kind::Book),
             "progress" => Ok(Kind::Progress),
             "bookmark" => Ok(Kind::Bookmark),
+            "highlight" => Ok(Kind::Highlight),
             _ => bail!("Unknown record kind"),
         }
     }
@@ -122,6 +125,31 @@ pub struct BookmarkValue {
     pub book_id: String,
     pub location: String,
     pub label: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Color {
+    Yellow,
+    Green,
+    Blue,
+    Pink,
+    Purple,
+}
+
+/// Coloured text. `location` is an EPUB CFI range, or for PDFs the first page number, a colon
+/// and JSON rectangles `[[page, x, y, width, height], …]` as fractions of the page.
+/// `fraction` places it in the book, for sorting.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HighlightValue {
+    pub book_id: String,
+    pub location: String,
+    pub text: String,
+    pub color: Color,
+    pub label: String,
+    pub fraction: f64,
     pub created_at: i64,
 }
 
@@ -190,12 +218,26 @@ pub fn validate_bookmark(value: &BookmarkValue) -> Result<()> {
     )
 }
 
+pub const MAX_HIGHLIGHT_TEXT: usize = 2000;
+
+pub fn validate_highlight(value: &HighlightValue) -> Result<()> {
+    check(
+        is_sha256(&value.book_id)
+            && text(&value.location, 16_000)
+            && text(&value.text, MAX_HIGHLIGHT_TEXT)
+            && text(&value.label, 300)
+            && value.fraction.is_finite()
+            && (0.0..=1.0).contains(&value.fraction)
+            && time(value.created_at),
+    )
+}
+
 pub fn validate_record(record: &Record) -> Result<()> {
     let r = &record.revision;
     check(time(r.time) && r.counter >= 0 && text(&r.actor, 200))?;
     match record.kind {
         Kind::Book | Kind::Progress => check(is_sha256(&record.id))?,
-        Kind::Bookmark => check(is_uuid(&record.id))?,
+        Kind::Bookmark | Kind::Highlight => check(is_uuid(&record.id))?,
     }
     let Some(value) = &record.value else { return Ok(()) };
     let value = value.clone();
@@ -203,25 +245,44 @@ pub fn validate_record(record: &Record) -> Result<()> {
         Kind::Book => validate_book(&serde_json::from_value(value).map_err(|_| invalid())?),
         Kind::Progress => validate_progress(&serde_json::from_value(value).map_err(|_| invalid())?),
         Kind::Bookmark => validate_bookmark(&serde_json::from_value(value).map_err(|_| invalid())?),
+        Kind::Highlight => validate_highlight(&serde_json::from_value(value).map_err(|_| invalid())?),
     }
 }
 
-/// Validates everything before any of it may be applied.
+/// Validates everything before any of it may be applied. Records of kinds a newer version added
+/// are skipped, so an older device keeps syncing everything it understands.
 pub fn validate_checkpoint(bytes: &[u8]) -> Result<Checkpoint> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Raw {
+        format: u32,
+        replica: String,
+        sequence: u64,
+        records: Vec<Value>,
+    }
     check(bytes.len() <= MAX_CHECKPOINT_BYTES)?;
-    let checkpoint: Checkpoint = serde_json::from_slice(bytes).map_err(|_| invalid())?;
+    let raw: Raw = serde_json::from_slice(bytes).map_err(|_| invalid())?;
     check(
-        checkpoint.format == CHECKPOINT_FORMAT
-            && text(&checkpoint.replica, 200)
-            && checkpoint.sequence >= 1
-            && checkpoint.records.len() <= 200_000,
+        raw.format == CHECKPOINT_FORMAT
+            && text(&raw.replica, 200)
+            && raw.sequence >= 1
+            && raw.records.len() <= 200_000,
     )?;
+    let mut records = Vec::with_capacity(raw.records.len());
+    for record in raw.records {
+        let known = record.get("kind").and_then(Value::as_str).is_some_and(|k| Kind::parse(k).is_ok());
+        if !known {
+            check(record.get("kind").is_some_and(Value::is_string))?;
+            continue;
+        }
+        records.push(serde_json::from_value::<Record>(record).map_err(|_| invalid())?);
+    }
     let mut seen = HashSet::new();
-    for record in &checkpoint.records {
+    for record in &records {
         validate_record(record)?;
         check(seen.insert((record.kind, record.id.as_str())))?;
     }
-    Ok(checkpoint)
+    Ok(Checkpoint { format: raw.format, replica: raw.replica, sequence: raw.sequence, records })
 }
 
 /// Stable bytes for hashing and equality. serde_json objects keep keys sorted.
@@ -276,6 +337,23 @@ mod tests {
         let mut version = good.clone();
         version["format"] = 2.into();
         assert!(validate_checkpoint(version.to_string().as_bytes()).is_err());
+
+        let mut future = good.clone();
+        future["records"].as_array_mut().unwrap().push(serde_json::json!({ "kind": "sticker", "id": "x", "anything": 1 }));
+        assert_eq!(validate_checkpoint(future.to_string().as_bytes()).unwrap().records.len(), 1);
+
+        let highlight = serde_json::json!({ "kind": "highlight", "id": "0b8e8a52-6f1c-4d1e-9a39-1d5f0c6f6c11",
+            "revision": { "time": 1, "counter": 0, "actor": "r" },
+            "value": { "bookId": "a".repeat(64), "location": "epubcfi(/6/4!/4/2,/1:0,/1:5)", "text": "Hello",
+                "color": "green", "label": "Chapter 1 · 3%", "fraction": 0.03, "createdAt": 1 } });
+        let mut colored = good.clone();
+        colored["records"].as_array_mut().unwrap().push(highlight.clone());
+        assert_eq!(validate_checkpoint(colored.to_string().as_bytes()).unwrap().records.len(), 2);
+        let mut odd = good.clone();
+        let mut bad_color = highlight;
+        bad_color["value"]["color"] = "orange".into();
+        odd["records"].as_array_mut().unwrap().push(bad_color);
+        assert!(validate_checkpoint(odd.to_string().as_bytes()).is_err());
 
         let mut bad_id = good;
         bad_id["records"][0]["id"] = "../etc".into();

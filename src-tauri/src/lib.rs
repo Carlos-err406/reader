@@ -10,7 +10,7 @@ use error::{bail, Error, Result};
 use google::{GoogleAuth, GoogleStatus};
 use serde::Serialize;
 use std::sync::Arc;
-use store::{Book, Bookmark, Store};
+use store::{Book, Bookmark, Highlight, Store};
 use sync::drive::Drive;
 use sync::engine::{Engine, Event, SyncStatus};
 use sync::model::ProgressValue;
@@ -39,13 +39,14 @@ struct Library {
     books: u32,
     local_books: u32,
     bookmarks: u32,
+    highlights: u32,
 }
 
 impl AppState {
     fn status(&self) -> Status {
-        let (books, local_books, bookmarks) = self.store.summary().unwrap_or_default();
+        let (books, local_books, bookmarks, highlights) = self.store.summary().unwrap_or_default();
         Status {
-            library: Library { books, local_books, bookmarks },
+            library: Library { books, local_books, bookmarks, highlights },
             sync: self.sync.status(),
             google: self.auth.status(),
             platform: if cfg!(target_os = "android") { "android" } else { "desktop" },
@@ -132,6 +133,33 @@ fn add_bookmark(book_id: String, location: String, label: String, state: State<'
 #[tauri::command]
 fn remove_bookmark(id: String, state: State<'_, AppState>) -> Result<()> {
     library::remove_bookmark(&state.store, &id)?;
+    state.sync.local_changed();
+    Ok(())
+}
+
+/// One book's highlights, or (without `book_id`) every book's.
+#[tauri::command]
+fn list_highlights(book_id: Option<String>, state: State<'_, AppState>) -> Result<Vec<Highlight>> {
+    state.store.highlights(book_id.as_deref())
+}
+
+#[tauri::command]
+fn add_highlight(book_id: String, highlight: library::NewHighlight, state: State<'_, AppState>) -> Result<Highlight> {
+    let highlight = library::add_highlight(&state.store, &book_id, highlight)?;
+    state.sync.local_changed();
+    Ok(highlight)
+}
+
+#[tauri::command]
+fn recolor_highlight(id: String, color: sync::model::Color, state: State<'_, AppState>) -> Result<Highlight> {
+    let highlight = library::set_highlight_color(&state.store, &id, color)?;
+    state.sync.local_changed();
+    Ok(highlight)
+}
+
+#[tauri::command]
+fn remove_highlight(id: String, state: State<'_, AppState>) -> Result<()> {
+    library::remove_highlight(&state.store, &id)?;
     state.sync.local_changed();
     Ok(())
 }
@@ -274,6 +302,10 @@ pub fn run() {
             list_bookmarks,
             add_bookmark,
             remove_bookmark,
+            list_highlights,
+            add_highlight,
+            recolor_highlight,
+            remove_highlight,
             sync_status,
             sync_enable,
             sync_pause,

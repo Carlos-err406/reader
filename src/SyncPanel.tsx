@@ -66,7 +66,7 @@ export function SyncPanel({ open, onOpenChange, status, onStatus }: Props) {
   if (!status.enabled) {
     detail = google.connected
       ? "Changes stay on this device until you resume."
-      : "Keep your books, reading position and bookmarks in step across your devices.";
+      : "Keep your books, reading position, bookmarks and highlights in step across your devices.";
   } else if (status.syncing) {
     detail = status.activity ?? "Working…";
   } else if (status.offline) {
@@ -144,7 +144,7 @@ export function SyncPanel({ open, onOpenChange, status, onStatus }: Props) {
             </span>
           </Fact>
           <Fact label="Library">
-            {plural(library.books, "book")} · {plural(library.bookmarks, "bookmark")} · reading positions
+            {plural(library.books, "book")} · {plural(library.bookmarks, "bookmark")} · {plural(library.highlights, "highlight")} · reading positions
             {library.localBooks < library.books && (
               <span className="block text-xs text-muted-foreground">
                 {plural(library.books - library.localBooks, "book")} still downloading to this device

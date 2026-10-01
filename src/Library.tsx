@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { EllipsisVertical, Info, Plus, Trash2, Type } from "lucide-react";
+import { EllipsisVertical, Highlighter, Info, Plus, Trash2, Type } from "lucide-react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,6 +17,7 @@ import { SyncPanel } from "./SyncPanel";
 import { DisplaySheet } from "./DisplaySheet";
 import { UpdateBanner } from "./UpdateBanner";
 import { AboutSheet } from "./AboutSheet";
+import { HighlightsSheet } from "./HighlightsSheet";
 import { usePullToSync } from "./usePullToSync";
 import { PullIndicator } from "./PullIndicator";
 
@@ -24,7 +25,7 @@ interface Props {
   books: Book[];
   status?: Status;
   onStatus: (status: Status) => void;
-  onOpen: (book: Book) => void;
+  onOpen: (book: Book, at?: string) => void;
   onChanged: () => void;
 }
 
@@ -63,6 +64,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
   const [showSync, setShowSync] = useState(false);
   const [showDisplay, setShowDisplay] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
+  const [showHighlights, setShowHighlights] = useState(false);
   const [removing, setRemoving] = useState<Book>();
   const [refreshing, setRefreshing] = useState(false);
 
@@ -148,6 +150,16 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
             <Type />
           </Button>
           <Button
+            variant="outline"
+            size="icon"
+            className="rounded-full bg-card"
+            onClick={() => setShowHighlights(true)}
+            aria-haspopup="dialog"
+            aria-label="Highlights"
+          >
+            <Highlighter />
+          </Button>
+          <Button
             className="rounded-full max-sm:size-9 max-sm:px-0"
             onClick={() => input.current?.click()}
             disabled={!!importing}
@@ -168,6 +180,15 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
 
         {status && <SyncPanel open={showSync} onOpenChange={setShowSync} status={status} onStatus={onStatus} />}
         <DisplaySheet open={showDisplay} onOpenChange={setShowDisplay} reading={false} />
+        <HighlightsSheet
+          open={showHighlights}
+          onOpenChange={setShowHighlights}
+          books={books}
+          onOpen={(book, at) => {
+            setShowHighlights(false);
+            onOpen(book, at);
+          }}
+        />
         {status && <AboutSheet open={showAbout} onOpenChange={setShowAbout} platform={status.platform} />}
         <ConfirmDialog
           open={!!removing}

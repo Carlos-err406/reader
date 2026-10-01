@@ -1,9 +1,9 @@
 //! Local library operations. Each edit is stamped for sync in the same transaction.
 use crate::error::{bail, Result};
-use crate::store::{now_ms, Book, Bookmark, Store};
+use crate::store::{now_ms, Book, Bookmark, Highlight, Store};
 use crate::sync::model::{
-    is_sha256, validate_book, validate_bookmark, validate_progress, BookValue, BookmarkValue,
-    Format, Kind, ProgressValue, MAX_BOOK_BYTES,
+    is_sha256, validate_book, validate_bookmark, validate_highlight, validate_progress, BookValue,
+    BookmarkValue, Color, Format, HighlightValue, Kind, ProgressValue, MAX_BOOK_BYTES, MAX_HIGHLIGHT_TEXT,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -86,6 +86,7 @@ pub fn remove(store: &Store, id: &str) -> Result<()> {
     require_book(store, id)?;
     let mut edits = vec![(Kind::Book, id.to_owned(), None)];
     edits.extend(store.bookmarks(id)?.into_iter().map(|b| (Kind::Bookmark, b.id, None)));
+    edits.extend(store.highlights(Some(id))?.into_iter().map(|h| (Kind::Highlight, h.id, None)));
     store.stamp(edits)?;
     store.release_deleted_blobs()?;
     Ok(())
@@ -118,6 +119,62 @@ pub fn add_bookmark(store: &Store, book: &str, location: String, label: String) 
 pub fn remove_bookmark(store: &Store, id: &str) -> Result<()> {
     match store.record(Kind::Bookmark, id)? {
         Some(record) if record.value.is_some() => store.stamp(vec![(Kind::Bookmark, id.to_owned(), None)]),
+        _ => Ok(()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewHighlight {
+    pub location: String,
+    pub text: String,
+    pub color: Color,
+    pub label: String,
+    pub fraction: f64,
+}
+
+/// Highlighting the same passage again recolours it instead of stacking a second one.
+pub fn add_highlight(store: &Store, book: &str, new: NewHighlight) -> Result<Highlight> {
+    require_book(store, book)?;
+    if let Some(existing) = store.highlights(Some(book))?.into_iter().find(|h| h.value.location == new.location) {
+        return set_highlight_color(store, &existing.id, new.color);
+    }
+    // Collapse the selection's line breaks and runs of spaces for the list.
+    let text: String = new.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let value = HighlightValue {
+        book_id: book.to_owned(),
+        location: new.location,
+        text: clip(&text, MAX_HIGHLIGHT_TEXT),
+        color: new.color,
+        label: new.label,
+        fraction: new.fraction.clamp(0.0, 1.0),
+        created_at: now_ms(),
+    };
+    validate_highlight(&value)?;
+    let id = uuid::Uuid::new_v4().to_string();
+    store.stamp(vec![(Kind::Highlight, id.clone(), Some(serde_json::to_value(&value)?))])?;
+    Ok(Highlight { id, value })
+}
+
+fn highlight(store: &Store, id: &str) -> Result<HighlightValue> {
+    match store.record(Kind::Highlight, id)?.and_then(|record| record.value) {
+        Some(value) => Ok(serde_json::from_value(value)?),
+        None => bail!("This highlight was removed"),
+    }
+}
+
+pub fn set_highlight_color(store: &Store, id: &str, color: Color) -> Result<Highlight> {
+    let mut value = highlight(store, id)?;
+    if value.color != color {
+        value.color = color;
+        store.stamp(vec![(Kind::Highlight, id.to_owned(), Some(serde_json::to_value(&value)?))])?;
+    }
+    Ok(Highlight { id: id.to_owned(), value })
+}
+
+pub fn remove_highlight(store: &Store, id: &str) -> Result<()> {
+    match store.record(Kind::Highlight, id)? {
+        Some(record) if record.value.is_some() => store.stamp(vec![(Kind::Highlight, id.to_owned(), None)]),
         _ => Ok(()),
     }
 }
@@ -164,6 +221,40 @@ mod tests {
         assert!(store.bookmarks(&book.id).unwrap().is_empty());
         assert!(!store.has_blob(&book.id).unwrap());
         assert!(set_progress(&store, &book.id, "1".into(), "Page 1".into(), 0.0).is_err());
+    }
+
+    fn mark(location: &str, color: Color) -> NewHighlight {
+        NewHighlight {
+            location: location.into(),
+            text: "  Call me\n  Ishmael.  ".into(),
+            color,
+            label: "Chapter 1 · 1%".into(),
+            fraction: 0.01,
+        }
+    }
+
+    #[test]
+    fn highlights_recolour_instead_of_stacking_and_leave_with_their_book() {
+        let store = Store::memory().unwrap();
+        let book = import(&store, &epub(), ImportMeta { title: "E".into(), author: None }).unwrap();
+        let first = add_highlight(&store, &book.id, mark("epubcfi(/6/4!/4/2,/1:0,/1:15)", Color::Yellow)).unwrap();
+        assert_eq!(first.value.text, "Call me Ishmael.");
+        let again = add_highlight(&store, &book.id, mark("epubcfi(/6/4!/4/2,/1:0,/1:15)", Color::Blue)).unwrap();
+        assert_eq!((again.id.as_str(), again.value.color), (first.id.as_str(), Color::Blue));
+        add_highlight(&store, &book.id, mark("2:[[2,0.1,0.2,0.5,0.03]]", Color::Pink)).unwrap();
+        assert_eq!(store.highlights(Some(&book.id)).unwrap().len(), 2);
+        assert_eq!(store.summary().unwrap().3, 2);
+
+        set_highlight_color(&store, &first.id, Color::Green).unwrap();
+        assert_eq!(store.highlights(None).unwrap()[0].value.color, Color::Green);
+        remove_highlight(&store, &first.id).unwrap();
+        assert!(set_highlight_color(&store, &first.id, Color::Pink).is_err());
+        assert_eq!(store.highlights(None).unwrap().len(), 1);
+
+        remove(&store, &book.id).unwrap();
+        assert!(store.highlights(None).unwrap().is_empty());
+        assert_eq!(store.summary().unwrap().3, 0);
+        assert!(add_highlight(&store, &book.id, mark("epubcfi(/6/4)", Color::Yellow)).is_err());
     }
 
     #[test]

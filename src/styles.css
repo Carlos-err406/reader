@@ -223,17 +223,96 @@
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.18);
 }
 .pdf-page {
-  display: block;
+  position: relative;
   background: #fff;
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.18);
 }
-/* PDFs can't be restyled, so dark reading inverts the page (and turns hues back). */
-.pdf-dark .pdf-page,
-.pdf-dark .pdf-slot {
+.pdf-page canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+/* PDFs can't be restyled, so dark reading inverts the page image (and turns hues back).
+   Highlights sit above it, so their colours stay true. */
+.pdf-dark .pdf-page canvas {
   filter: invert(0.9) hue-rotate(180deg);
 }
-.pdf-dark .pdf-slot .pdf-page {
-  filter: none;
+.pdf-dark .pdf-slot,
+.pdf-dark .pdf-page {
+  background: #1a1a1a;
+}
+.pdf-slot .pdf-page {
+  box-shadow: none;
+}
+/* A highlight over the page image: multiplied, so the print shows through as on paper. */
+.pdf-mark {
+  position: absolute;
+  border-radius: 2px;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+.pdf-dark .pdf-mark {
+  mix-blend-mode: normal;
+}
+
+/* PDF.js's transparent text over each page, for selecting (from its pdf_viewer.css). */
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  text-align: initial;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 0;
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+.textLayer > :not(.markedContent),
+.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.textLayer .markedContent {
+  display: contents;
+}
+.textLayer span[role="img"] {
+  user-select: none;
+  cursor: default;
+}
+.textLayer ::selection {
+  background: rgb(0 90 255 / 0.25);
+}
+.textLayer br::selection {
+  background: transparent;
+}
+.textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+.textLayer.selecting .endOfContent {
+  top: 0;
 }
 .turn {
   @apply absolute top-0 bottom-0 z-[2] w-[18%] max-w-36;

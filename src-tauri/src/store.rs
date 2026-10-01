@@ -2,7 +2,8 @@
 //! Every method is synchronous, so no transaction ever spans a network await.
 use crate::error::{bail, Result};
 use crate::sync::model::{
-    canonical, validate_record, BookValue, BookmarkValue, Kind, ProgressValue, Record, Revision,
+    canonical, validate_record, BookValue, BookmarkValue, HighlightValue, Kind, ProgressValue, Record,
+    Revision,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
@@ -50,6 +51,14 @@ pub struct Bookmark {
     pub id: String,
     #[serde(flatten)]
     pub value: BookmarkValue,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Highlight {
+    pub id: String,
+    #[serde(flatten)]
+    pub value: HighlightValue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -330,15 +339,33 @@ impl Store {
             .collect()
     }
 
-    /// (books in the library, books whose bytes are on this device, bookmarks)
-    pub fn summary(&self) -> Result<(u32, u32, u32)> {
+    /// One book's highlights, or every book's, in reading order. A deleted book's are left out.
+    pub fn highlights(&self, book: Option<&str>) -> Result<Vec<Highlight>> {
+        let conn = self.lock();
+        let rows = conn
+            .prepare(
+                "SELECT h.id, h.value FROM records h
+                 JOIN records b ON b.kind='book' AND b.id=json_extract(h.value,'$.bookId') AND b.value IS NOT NULL
+                 WHERE h.kind='highlight' AND h.value IS NOT NULL AND (?1 IS NULL OR b.id=?1)
+                 ORDER BY b.id, json_extract(h.value,'$.fraction'), json_extract(h.value,'$.createdAt')",
+            )?
+            .query_map([book], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|(id, value)| Ok(Highlight { id, value: serde_json::from_str(&value)? }))
+            .collect()
+    }
+
+    /// Counts of books in the library, books whose bytes are on this device, bookmarks and highlights.
+    pub fn summary(&self) -> Result<(u32, u32, u32, u32)> {
         Ok(self.lock().query_row(
             "SELECT
                (SELECT count(*) FROM records WHERE kind='book' AND value IS NOT NULL),
                (SELECT count(*) FROM records r JOIN blobs b ON b.sha256=r.id WHERE r.kind='book' AND r.value IS NOT NULL),
-               (SELECT count(*) FROM records WHERE kind='bookmark' AND value IS NOT NULL)",
+               (SELECT count(*) FROM records WHERE kind='bookmark' AND value IS NOT NULL),
+               (SELECT count(*) FROM records WHERE kind='highlight' AND value IS NOT NULL)",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?)
     }
 
@@ -485,14 +512,14 @@ mod tests {
         store.put_blob(&book_id(), b"pdf").unwrap();
         assert_eq!(store.release_deleted_blobs().unwrap(), 0);
         assert!(store.books().unwrap()[0].available);
-        assert_eq!(store.summary().unwrap(), (1, 1, 0));
+        assert_eq!(store.summary().unwrap(), (1, 1, 0, 0));
         assert_eq!(store.books().unwrap()[0].cover, None);
         store.set_cover(&book_id(), b"\xff\xd8jpeg").unwrap();
         assert_eq!(store.books().unwrap()[0].cover, Some(true));
         store.stamp(vec![(Kind::Book, book_id(), None)]).unwrap();
         assert_eq!(store.release_deleted_blobs().unwrap(), 1);
         assert!(store.cover(&book_id()).unwrap().is_none());
-        assert_eq!(store.summary().unwrap(), (0, 0, 0));
+        assert_eq!(store.summary().unwrap(), (0, 0, 0, 0));
         assert!(store.books().unwrap().is_empty());
     }
 }

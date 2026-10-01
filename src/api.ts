@@ -32,6 +32,23 @@ export interface Bookmark {
   createdAt: number;
 }
 
+export type HighlightColor = "yellow" | "green" | "blue" | "pink" | "purple";
+
+export interface Highlight {
+  id: string;
+  bookId: string;
+  /** An EPUB CFI range, or for PDFs the page, a colon and the marked rectangles (see highlights.ts). */
+  location: string;
+  text: string;
+  color: HighlightColor;
+  /** Chapter and percentage, or page, for lists. */
+  label: string;
+  fraction: number;
+  createdAt: number;
+}
+
+export type NewHighlight = Pick<Highlight, "location" | "text" | "color" | "label" | "fraction">;
+
 export interface Status {
   enabled: boolean;
   syncing: boolean;
@@ -47,7 +64,7 @@ export interface Status {
   /** The Google account email, when known. */
   account: string | null;
   platform: "desktop" | "android";
-  library: { books: number; localBooks: number; bookmarks: number };
+  library: { books: number; localBooks: number; bookmarks: number; highlights: number };
   google: {
     configured: boolean;
     connected: boolean;
@@ -57,7 +74,7 @@ export interface Status {
 }
 
 export interface Changed {
-  kind: "book" | "progress" | "bookmark";
+  kind: "book" | "progress" | "bookmark" | "highlight";
   id: string;
 }
 
@@ -84,6 +101,11 @@ export const api = {
   addBookmark: (bookId: string, p: Position) =>
     invoke<Bookmark>("add_bookmark", { bookId, location: p.location, label: p.label }),
   removeBookmark: (id: string) => invoke<void>("remove_bookmark", { id }),
+  /** One book's highlights in reading order, or every book's without `bookId`. */
+  highlights: (bookId?: string) => invoke<Highlight[]>("list_highlights", { bookId: bookId ?? null }),
+  addHighlight: (bookId: string, highlight: NewHighlight) => invoke<Highlight>("add_highlight", { bookId, highlight }),
+  recolorHighlight: (id: string, color: HighlightColor) => invoke<Highlight>("recolor_highlight", { id, color }),
+  removeHighlight: (id: string) => invoke<void>("remove_highlight", { id }),
   status: () => invoke<Status>("sync_status"),
   enableSync: () => invoke<Status>("sync_enable"),
   pauseSync: () => invoke<Status>("sync_pause"),

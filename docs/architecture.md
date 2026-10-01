@@ -2,9 +2,10 @@
 
 ## Layout
 
-- `src/`: React UI (Vite). Contains `PdfView` (pdf.js, one canvas page at a time), `EpubView` (epub.js, paginated) and `Reader` (toolbar, bookmarks, remote-position banner). It talks to Rust only through `src/api.ts`.
+- `src/`: React UI (Vite). Contains `PdfView` (pdf.js canvases with its transparent text layer for selecting, `pdfText.ts`), `EpubView` (epub.js, scrolled or paginated) and `Reader` (toolbar, bookmarks, highlights, remote-position banner). It talks to Rust only through `src/api.ts`.
+- Highlights (`highlights.ts`): EPUB chapters paint them with the CSS Custom Highlight API (`::highlight()`), so they reflow with the text. PDF highlights are rectangles stored as fractions of the page and drawn over the page image. `HighlightToolbar` colours a selection or a tapped highlight. `MarksPanel` lists one book's highlights and bookmarks, and `HighlightsSheet` lists the whole library's, with search.
 - `src-tauri/src/store.rs`: SQLite. `records` holds the synced state, `blobs` holds book bytes (a local cache) and `meta` holds per-device state (replica id, clock, sync settings, pending checkpoint).
-- `src-tauri/src/library.rs`: import, remove, progress and bookmarks. Every write is stamped with a revision in the same transaction.
+- `src-tauri/src/library.rs`: import, remove, progress, bookmarks and highlights. Every write is stamped with a revision in the same transaction.
 - `src-tauri/src/sync/`: `model.rs` (wire format and validation), `engine.rs` (the scheduler and sync algorithm, generic over a `Transport`), `drive.rs` (the Google Drive transport).
 - `src-tauri/src/google/`: `desktop.rs` (browser, PKCE, loopback callback that answers with a styled page and an `org.reader.books://connected` link back to the app, refresh token in the OS keychain) and `android.rs`, which calls `gen/android/.../GoogleAuthPlugin.kt` (Play services `AuthorizationClient`).
 - `src-tauri/src/updates.rs` finds the newest Android release on GitHub. `system_ui::install_update` passes it to `AppUpdatePlugin.kt`, which downloads and verifies the APK and opens Android's installer.
@@ -18,8 +19,11 @@ Tokens never enter the webview. The UI never sees Drive.
 | `book`     | SHA-256 of the file       | title, author, format, size, addedAt          |
 | `progress` | book id                   | location (PDF page / EPUB CFI), label, fraction, updatedAt |
 | `bookmark` | random UUID               | bookId, location, label, createdAt            |
+| `highlight` | random UUID              | bookId, location, text, color, label, fraction, createdAt |
 
-`value: null` is a tombstone. Removing a book tombstones the book and its bookmarks. A device only drops its local copy of the bytes after it receives the tombstone. A missing record on the remote side never deletes anything.
+A highlight's `location` is an EPUB CFI range, or for PDFs the first page, a colon and JSON rectangles `[[page, x, y, width, height], …]`. `color` is one of yellow, green, blue, pink or purple. Highlighting the same passage again recolours it.
+
+`value: null` is a tombstone. Removing a book tombstones the book, its bookmarks and its highlights. A device only drops its local copy of the bytes after it receives the tombstone. A missing record on the remote side never deletes anything.
 
 ## Sync protocol (ported from Tasker)
 
@@ -28,6 +32,7 @@ Tokens never enter the webview. The UI never sees Drive.
 - **Order of a run:** list checkpoints, then read each device's newest unseen checkpoint, validate it fully, and apply it in one transaction. Next, upload any local books that are missing on Drive, publish the pending checkpoint, prune old ones, and finally download books this device lacks. Progress sync never waits for large book downloads.
 - **Books** are Drive files tagged `kind=book, bookSha=<sha>`. Uploads use resumable upload and are verified with Drive's `sha256Checksum` and size. Downloads are verified against the SHA-256.
 - **Scheduling:** one job at a time. Edits are debounced by 2 s, polling runs every 30 s, and failures back off exponentially up to 1 h. On Android, sync runs only while the app is visible. Every await is followed by a generation check, so pausing or going to the background cancels work before it is applied.
+- **Newer record kinds:** a checkpoint record whose kind this version doesn't know is skipped, so an older device keeps syncing everything else. Versions before 0.1.4 reject such checkpoints, so highlights need every device on 0.1.4 or later.
 - **Account pinning:** the Drive `permissionId` is stored when sync is enabled. If a different account shows up, sync pauses instead of merging libraries.
 
 ## Limits

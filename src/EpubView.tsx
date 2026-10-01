@@ -1,5 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import ePub, { type Book, type Contents, type NavItem, type Rendition } from "epubjs";
+import ePub, { EpubCFI, type Book, type Contents, type NavItem, type Rendition } from "epubjs";
+import type { Highlight } from "./api";
+import { byAge, highlightCss, highlightName, SWATCHES, type Rect, type TextSelection } from "./highlights";
 import { epubLabel } from "./format";
 import { isPageTap, type ViewerHandle, type ViewerProps } from "./viewer";
 import { stripActiveContent } from "./sanitize";
@@ -92,8 +94,75 @@ function applyLook(doc: Document, css: string) {
 
 const locationsKey = (id: string) => `reader:epub-locations:${id}`;
 
+/** Where a range inside a chapter's frame is on the screen. */
+function viewportRect(range: Range): Rect {
+  const r = range.getBoundingClientRect();
+  const frame = range.startContainer.ownerDocument?.defaultView?.frameElement?.getBoundingClientRect();
+  const dx = frame?.left ?? 0;
+  const dy = frame?.top ?? 0;
+  return { top: r.top + dy, bottom: r.bottom + dy, left: r.left + dx, right: r.right + dx };
+}
+
+interface Painted {
+  id: string;
+  range: Range;
+}
+/** Each chapter's highlight ranges, newest last, for finding which one a tap landed on. */
+const painted = new WeakMap<Document, Painted[]>();
+
+type HighlightWindow = Window & {
+  CSS?: { highlights?: Map<string, unknown> };
+  Highlight?: new (...ranges: Range[]) => unknown;
+};
+
+/**
+ * Colours a chapter's highlights with the CSS Custom Highlight API: the text itself is painted,
+ * so highlights reflow with font and size changes and never cover anything.
+ */
+function paint(contents: Contents, list: Highlight[], dark: boolean) {
+  const doc = contents.document;
+  let style = doc.getElementById("reader-highlights");
+  if (!style) {
+    style = doc.createElement("style");
+    style.id = "reader-highlights";
+    doc.head.appendChild(style);
+  }
+  const css = highlightCss(dark);
+  if (style.textContent !== css) style.textContent = css;
+  const here: (Painted & { color: Highlight["color"] })[] = [];
+  for (const h of byAge(list)) {
+    if (!h.location.startsWith("epubcfi(")) continue;
+    try {
+      if (new EpubCFI(h.location).spinePos !== contents.sectionIndex) continue;
+      const range = contents.range(h.location);
+      if (range && !range.collapsed) here.push({ id: h.id, range, color: h.color });
+    } catch {
+      // A highlight from a different edition of the book; nothing to paint.
+    }
+  }
+  painted.set(doc, here);
+  const win = doc.defaultView as HighlightWindow | null;
+  const registry = win?.CSS?.highlights;
+  if (!registry || !win?.Highlight) return;
+  for (const s of SWATCHES) {
+    const ranges = here.filter((p) => p.color === s.id).map((p) => p.range);
+    if (ranges.length) registry.set(highlightName(s.id), new win.Highlight(...ranges));
+    else registry.delete(highlightName(s.id));
+  }
+}
+
+function hitHighlight(doc: Document, x: number, y: number): Painted | undefined {
+  const list = painted.get(doc) ?? [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    for (const r of list[i]!.range.getClientRects()) {
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return list[i];
+    }
+  }
+  return undefined;
+}
+
 export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
-  { id, data, initial, layout, css, cssFor, textSize, onMove, onError, onTap, onTextSize },
+  { id, data, initial, resume, layout, css, cssFor, textSize, dark, onMove, onError, onTap, onTextSize, highlights, onSelect, onHighlightTap },
   ref,
 ) {
   const host = useRef<HTMLDivElement>(null);
@@ -118,6 +187,14 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
   move.current = onMove;
   const tap = useRef(onTap);
   tap.current = onTap;
+  const marks = useRef(highlights);
+  marks.current = highlights;
+  const darkPage = useRef(dark);
+  darkPage.current = dark;
+  const selected = useRef(onSelect);
+  selected.current = onSelect;
+  const tappedMark = useRef(onHighlightTap);
+  tappedMark.current = onHighlightTap;
   const sizeChanged = useRef(onTextSize);
   sizeChanged.current = onTextSize;
   const size = useRef(textSize);
@@ -236,13 +313,18 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       }
       return null;
     };
+    // The selection being offered for highlighting, so its toolbar can follow the scroll.
+    let selection: { range: Range; offer: Omit<TextSelection, "rect"> } | null = null;
+    const follow = () => selection && selected.current({ ...selection.offer, rect: viewportRect(selection.range) });
     let dragging = false;
     let frame = 0;
     const onScroll = () => {
       setScrolled(Date.now());
-      if (dragging || frame) return;
+      if (frame) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
+        follow();
+        if (dragging) return;
         const f = liveFraction();
         if (f !== null) setFraction(f);
       });
@@ -393,6 +475,15 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       }
       view.hooks.content.register((contents: Contents) => {
         applyLook(contents.document, look.current);
+        paint(contents, marks.current, darkPage.current);
+        // A selection that collapses (tapped away, highlighted, copied) takes its toolbar with it.
+        contents.document.addEventListener("selectionchange", () => {
+          if (!selection || selection.range.startContainer.ownerDocument !== contents.document) return;
+          const current = contents.document.getSelection();
+          if (current && !current.isCollapsed) return;
+          selection = null;
+          selected.current(null);
+        });
         // Justified text hyphenates by language; some books only declare it in their metadata.
         const html = contents.document.documentElement;
         const language = book.packaging?.metadata?.language;
@@ -429,8 +520,37 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
         }
         report(save);
       });
-      // Taps inside the chapter arrive from its iframe.
-      view.on("click", (e: MouseEvent) => stage === active && isPageTap(e) && tap.current());
+      // Taps inside the chapter arrive from its iframe. One on a highlight opens its menu.
+      view.on("click", (e: MouseEvent) => {
+        if (stage !== active || !isPageTap(e)) return;
+        const doc = (e.target as Node | null)?.ownerDocument;
+        const hit = doc ? hitHighlight(doc, e.clientX, e.clientY) : undefined;
+        if (hit) tappedMark.current(hit.id, viewportRect(hit.range));
+        else tap.current();
+      });
+      // epub.js reports a selection once it settles.
+      view.on("selected", (cfiRange: string, contents: Contents) => {
+        if (stage !== active) return;
+        const current = contents.document.getSelection();
+        if (!current || current.isCollapsed || !current.rangeCount) return;
+        const range = current.getRangeAt(0);
+        // The selection's text keeps paragraph breaks that the range's own text drops.
+        const text = (current.toString() || range.toString()).trim();
+        if (!text) return;
+        const index = contents.sectionIndex;
+        const located = book.locations.length() ? book.locations.percentageFromCfi(cfiRange) : -1;
+        const fraction = Math.min(1, Math.max(0, located >= 0 ? located : spans.current.length ? toBook(spans.current, index, 0) : 0));
+        const href = book.spine.get(index)?.href;
+        const offer = {
+          location: cfiRange,
+          text,
+          label: epubLabel(fraction, href ? chapterOf(book, href) : undefined),
+          fraction,
+          clear: () => contents.document.getSelection()?.removeAllRanges(),
+        };
+        selection = { range, offer };
+        follow();
+      });
       if (layout === "pages") {
         const turn = (forward: boolean) => {
           forced.current = true;
@@ -473,7 +593,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
     const opening = active;
     opening.view
       .display(start || undefined)
-      .then(() => first && initial && mark(opening.view, initial))
+      .then(() => first && initial && resume && mark(opening.view, initial))
       .catch(() => opening.view.display())
       .catch(onError);
     // Building the index takes a few seconds on a long book, so it's cached per device.
@@ -508,6 +628,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       setFraction(null);
       detachPinch();
       clearMark.current = () => {};
+      if (selection) selected.current(null);
       rendition.current = undefined;
       pending?.destroy();
       active.destroy();
@@ -522,6 +643,9 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
   useEffect(() => {
     (rendition.current?.getContents() as unknown as Contents[] | undefined)?.forEach((c) => applyLook(c.document, css));
   }, [css]);
+  useEffect(() => {
+    (rendition.current?.getContents() as unknown as Contents[] | undefined)?.forEach((c) => paint(c, highlights, dark));
+  }, [highlights, dark]);
 
   useImperativeHandle(ref, () => {
     const navigate = (save: boolean, go: (view: Rendition) => Promise<void>) => {

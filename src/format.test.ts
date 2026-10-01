@@ -13,7 +13,7 @@ const status = (patch: Partial<Status>): Status => ({
   retryAt: null,
   account: "reader@example.com",
   platform: "desktop",
-  library: { books: 0, localBooks: 0, bookmarks: 0 },
+  library: { books: 0, localBooks: 0, bookmarks: 0, highlights: 0 },
   google: { configured: true, connected: true, connecting: false, error: null },
   ...patch,
 });

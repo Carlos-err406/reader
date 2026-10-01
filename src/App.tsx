@@ -5,7 +5,7 @@ import { Reader } from "./Reader";
 
 export function App() {
   const [books, setBooks] = useState<Book[]>([]);
-  const [open, setOpen] = useState<Book>();
+  const [open, setOpen] = useState<{ book: Book; at?: string }>();
   const [status, setStatus] = useState<Status>();
   const [error, setError] = useState<string>();
   const [, tick] = useState(0);
@@ -48,9 +48,9 @@ export function App() {
     return () => window.removeEventListener("popstate", back);
   }, []);
 
-  const openBook = (book: Book) => {
+  const openBook = (book: Book, at?: string) => {
     history.pushState({ book: book.id }, "");
-    setOpen(book);
+    setOpen({ book, at });
   };
   const close = useCallback(() => {
     if (history.state?.book) history.back();
@@ -58,7 +58,7 @@ export function App() {
     refresh();
   }, [refresh]);
 
-  if (open) return <Reader key={open.id} book={open} onClose={close} />;
+  if (open) return <Reader key={open.book.id} book={open.book} at={open.at} onClose={close} />;
   return (
     <>
       {error && <p className="m-4 text-sm text-destructive">{error}</p>}

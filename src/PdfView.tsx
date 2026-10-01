@@ -1,20 +1,63 @@
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
-import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { PDFDocumentProxy, RenderTask, TextLayer } from "pdfjs-dist";
+import type { HighlightColor } from "./api";
 import { pdfjs } from "./pdf";
 import { pdfPage, pdfPosition } from "./format";
 import { attachPinch, MAX_ZOOM, MIN_ZOOM, type Focal } from "./pinch";
 import { isPageTap, type ViewerHandle, type ViewerProps } from "./viewer";
+import { attachTextLayer } from "./pdfText";
+import {
+  byAge,
+  mergeLines,
+  pdfHighlightLocation,
+  pdfHighlightRects,
+  swatch,
+  type PageRect,
+  type Rect,
+  type TextSelection,
+} from "./highlights";
 
 /** Keeps zoomed canvases within what phones can allocate. */
 const MAX_CANVAS = 4096;
 
-/** Renders one page into a canvas `width` CSS pixels wide (or fitted into width×height). */
-function PageCanvas({ doc, number, width, height }: { doc: PDFDocumentProxy; number: number; width: number; height?: number }) {
+/** One marked rectangle of a highlight on a page: x, y, width and height as fractions of it. */
+interface Mark {
+  id: string;
+  color: HighlightColor;
+  box: [number, number, number, number];
+}
+
+const inside = ([x, y, w, h]: Mark["box"], px: number, py: number) => px >= x && px <= x + w && py >= y && py <= y + h;
+
+/**
+ * Renders one page into a canvas `width` CSS pixels wide (or fitted into width×height), with
+ * its highlights over the image and PDF.js's transparent text on top for selecting.
+ */
+function PdfPage({
+  doc,
+  number,
+  width,
+  height,
+  marks,
+  dark,
+}: {
+  doc: PDFDocumentProxy;
+  number: number;
+  width: number;
+  height?: number;
+  marks: Mark[] | undefined;
+  dark: boolean;
+}) {
   const canvas = useRef<HTMLCanvasElement>(null);
+  const text = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ width: number; height: number }>();
   useEffect(() => {
     const target = canvas.current;
-    if (!target || width <= 0) return;
+    const layer = text.current;
+    if (!target || !layer || width <= 0) return;
     let task: RenderTask | undefined;
+    let words: TextLayer | undefined;
+    let detach = () => {};
     let cancelled = false;
     void doc.getPage(number).then((page) => {
       if (cancelled) return;
@@ -25,17 +68,87 @@ function PageCanvas({ doc, number, width, height }: { doc: PDFDocumentProxy; num
       const viewport = page.getViewport({ scale: scale * ratio });
       target.width = Math.floor(viewport.width);
       target.height = Math.floor(viewport.height);
-      target.style.width = `${Math.floor(cssWidth)}px`;
-      target.style.height = `${Math.floor(base.height * scale)}px`;
+      setBox({ width: Math.floor(cssWidth), height: Math.floor(base.height * scale) });
       task = page.render({ canvas: target, viewport });
       task.promise.catch(() => {});
+      layer.replaceChildren();
+      layer.style.setProperty("--total-scale-factor", String(scale));
+      words = new pdfjs.TextLayer({
+        textContentSource: page.streamTextContent({ includeMarkedContent: true, disableNormalization: true }),
+        container: layer,
+        viewport: page.getViewport({ scale }),
+      });
+      words.render().then(
+        () => {
+          if (!cancelled) detach = attachTextLayer(layer);
+        },
+        () => {},
+      );
     });
     return () => {
       cancelled = true;
       task?.cancel();
+      words?.cancel();
+      detach();
     };
   }, [doc, number, width, height]);
-  return <canvas ref={canvas} className="pdf-page" />;
+  return (
+    <div className="pdf-page" data-page={number} style={box}>
+      <canvas ref={canvas} />
+      {marks?.map((m, i) => (
+        <div
+          key={`${m.id}-${i}`}
+          className="pdf-mark"
+          style={{
+            left: `${m.box[0] * 100}%`,
+            top: `${m.box[1] * 100}%`,
+            width: `${m.box[2] * 100}%`,
+            height: `${m.box[3] * 100}%`,
+            background: dark ? swatch(m.color).dark : swatch(m.color).light,
+          }}
+        />
+      ))}
+      <div ref={text} className="textLayer" />
+    </div>
+  );
+}
+
+/** What part of the screen a range covers, and the same as rectangles on the pages it spans. */
+function measure(range: Range): { rects: PageRect[]; rect: Rect } | null {
+  const rects: PageRect[] = [];
+  const rect: Rect = { top: Infinity, bottom: -Infinity, left: Infinity, right: -Infinity };
+  const root = range.commonAncestorContainer;
+  const nodes: Text[] = [];
+  if (root.nodeType === Node.TEXT_NODE) nodes.push(root as Text);
+  else {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) if (range.intersectsNode(n)) nodes.push(n as Text);
+  }
+  for (const node of nodes) {
+    const page = node.parentElement?.closest<HTMLElement>(".pdf-page[data-page]");
+    if (!page || !node.parentElement?.closest(".textLayer")) continue;
+    const part = document.createRange();
+    part.selectNodeContents(node);
+    if (node === range.startContainer) part.setStart(node, range.startOffset);
+    if (node === range.endContainer) part.setEnd(node, range.endOffset);
+    const at = page.getBoundingClientRect();
+    if (at.width <= 0 || at.height <= 0) continue;
+    for (const r of part.getClientRects()) {
+      if (r.width <= 0 || r.height <= 0) continue;
+      rects.push([Number(page.dataset.page), (r.left - at.left) / at.width, (r.top - at.top) / at.height, r.width / at.width, r.height / at.height]);
+      rect.top = Math.min(rect.top, r.top);
+      rect.bottom = Math.max(rect.bottom, r.bottom);
+      rect.left = Math.min(rect.left, r.left);
+      rect.right = Math.max(rect.right, r.right);
+    }
+  }
+  if (!rects.length) return null;
+  const clamp = (n: number) => Math.min(1, Math.max(0, n));
+  // Long selections are capped so the location stays a reasonable size to sync.
+  const merged = mergeLines(rects)
+    .slice(0, 300)
+    .map(([p, x, y, w, h]): PageRect => [p, clamp(x), clamp(y), Math.min(w, 1 - clamp(x)), Math.min(h, 1 - clamp(y))]);
+  return { rects: merged, rect };
 }
 
 function useSize(element: React.RefObject<HTMLElement | null>) {
@@ -86,10 +199,13 @@ function usePinch(
 }
 
 export const PdfView = forwardRef<ViewerHandle, ViewerProps>(function PdfView(
-  { data, initial, layout, dark, zoom, onMove, onError, onTap, onPinch },
+  { data, initial, layout, dark, zoom, onMove, onError, onTap, onPinch, highlights, onSelect, onHighlightTap },
   ref,
 ) {
   const [doc, setDoc] = useState<PDFDocumentProxy>();
+  const root = useRef<HTMLDivElement>(null);
+  const selected = useRef(onSelect);
+  selected.current = onSelect;
   // Shared by both layouts, so switching keeps the page.
   const [page, setPage] = useState(0);
   const [aspects, setAspects] = useState<number[]>([]);
@@ -128,9 +244,106 @@ export const PdfView = forwardRef<ViewerHandle, ViewerProps>(function PdfView(
     if (doc && page) onMove(pdfPosition(page, doc.numPages), true);
   }, [doc, page]);
 
+  const marks = useMemo(() => {
+    const byPage = new Map<number, Mark[]>();
+    for (const h of byAge(highlights)) {
+      for (const [p, ...box] of pdfHighlightRects(h.location)) {
+        byPage.set(p, [...(byPage.get(p) ?? []), { id: h.id, color: h.color, box }]);
+      }
+    }
+    return byPage;
+  }, [highlights]);
+
+  // Selected text, offered for highlighting once the selection settles. The offer follows the
+  // page as it scrolls, and goes away with the selection.
+  useEffect(() => {
+    if (!doc) return;
+    let active: Range | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let frame = 0;
+    const offer = (range: Range) => {
+      const measured = measure(range);
+      if (!measured) return false;
+      const first = measured.rects[0]![0];
+      // The selection's text keeps line breaks that the range's own text drops.
+      const text = (document.getSelection()?.toString() || range.toString()).trim();
+      if (!text) return false;
+      const position = pdfPosition(first, doc.numPages);
+      const selection: TextSelection = {
+        location: pdfHighlightLocation(measured.rects),
+        text,
+        label: position.label,
+        fraction: position.fraction,
+        rect: measured.rect,
+        clear: () => document.getSelection()?.removeAllRanges(),
+      };
+      selected.current(selection);
+      return true;
+    };
+    const drop = () => {
+      if (!active) return;
+      active = null;
+      selected.current(null);
+    };
+    const settle = () => {
+      const current = document.getSelection();
+      const range = current && current.rangeCount && !current.isCollapsed ? current.getRangeAt(0) : null;
+      if (!range || !root.current?.contains(range.commonAncestorContainer)) return drop();
+      active = range;
+      if (!offer(range)) drop();
+    };
+    const change = () => {
+      clearTimeout(timer);
+      const current = document.getSelection();
+      if (!current || current.isCollapsed) drop();
+      else timer = setTimeout(settle, 250);
+    };
+    const follow = () => {
+      if (active && !frame) frame = requestAnimationFrame(() => ((frame = 0), active && offer(active)));
+    };
+    const element = root.current;
+    document.addEventListener("selectionchange", change);
+    element?.addEventListener("scroll", follow, { capture: true, passive: true });
+    return () => {
+      clearTimeout(timer);
+      cancelAnimationFrame(frame);
+      document.removeEventListener("selectionchange", change);
+      element?.removeEventListener("scroll", follow, { capture: true });
+      drop();
+    };
+  }, [doc]);
+
+  // A tap on a highlight opens its menu; anywhere else it shows or hides the controls.
+  const onPageClick = (e: MouseEvent) => {
+    if (!isPageTap(e)) return;
+    const page = (e.target as Element | null)?.closest?.<HTMLElement>(".pdf-page[data-page]");
+    if (page) {
+      const at = page.getBoundingClientRect();
+      const x = (e.clientX - at.left) / at.width;
+      const y = (e.clientY - at.top) / at.height;
+      const here = marks.get(Number(page.dataset.page)) ?? [];
+      const hit = here.findLast((m) => inside(m.box, x, y));
+      if (hit) {
+        const boxes = here.filter((m) => m.id === hit.id).map((m) => m.box);
+        onHighlightTap(hit.id, {
+          top: at.top + Math.min(...boxes.map((b) => b[1])) * at.height,
+          bottom: at.top + Math.max(...boxes.map((b) => b[1] + b[3])) * at.height,
+          left: at.left + Math.min(...boxes.map((b) => b[0])) * at.width,
+          right: at.left + Math.max(...boxes.map((b) => b[0] + b[2])) * at.width,
+        });
+        return;
+      }
+    }
+    onTap();
+  };
+
   if (!doc || !page) return <div className="pdf-frame" />;
-  const shared = { doc, page, setPage, dark, zoom, handle: ref, onTap, onPinch };
-  return layout === "scroll" ? <PdfScroll {...shared} aspects={aspects} /> : <PdfPages {...shared} />;
+  const shared = { doc, page, setPage, dark, zoom, handle: ref, onPageClick, onPinch, marks };
+  return (
+    <div ref={root} className="contents">
+      {layout === "scroll" ? <PdfScroll {...shared} aspects={aspects} /> : <PdfPages {...shared} />}
+    </div>
+  );
 });
 
 interface LayoutProps {
@@ -140,11 +353,12 @@ interface LayoutProps {
   dark: boolean;
   zoom: number;
   handle: React.ForwardedRef<ViewerHandle>;
-  onTap: () => void;
+  onPageClick: (e: MouseEvent) => void;
   onPinch: ViewerProps["onPinch"];
+  marks: Map<number, Mark[]>;
 }
 
-function PdfPages({ doc, page, setPage, dark, zoom, handle, onTap, onPinch }: LayoutProps) {
+function PdfPages({ doc, page, setPage, dark, zoom, handle, onPageClick, onPinch, marks }: LayoutProps) {
   const frame = useRef<HTMLDivElement>(null);
   const focal = useRef<Focal | null>(null);
   const size = useSize(frame);
@@ -164,13 +378,20 @@ function PdfPages({ doc, page, setPage, dark, zoom, handle, onTap, onPinch }: La
     <div
       className={`pdf-frame ${dark ? "pdf-dark" : ""}`}
       ref={frame}
-      onClick={(e) => isPageTap(e.nativeEvent) && onTap()}
+      onClick={(e) => onPageClick(e.nativeEvent)}
     >
       <div
         className="pdf-fit"
         style={preview ? { transform: `scale(${preview.scale})`, transformOrigin: `${preview.focal.x}px ${preview.focal.y}px` } : undefined}
       >
-        <PageCanvas doc={doc} number={page} width={size.width * zoom} height={size.height * zoom} />
+        <PdfPage
+          doc={doc}
+          number={page}
+          width={size.width * zoom}
+          height={size.height * zoom}
+          marks={marks.get(page)}
+          dark={dark}
+        />
       </div>
     </div>
   );
@@ -179,7 +400,18 @@ function PdfPages({ doc, page, setPage, dark, zoom, handle, onTap, onPinch }: La
 const GAP = 12;
 
 /** A continuous column of pages. Only pages near the screen are rendered. */
-function PdfScroll({ doc, page, setPage, dark, zoom, handle, aspects, onTap, onPinch }: LayoutProps & { aspects: number[] }) {
+function PdfScroll({
+  doc,
+  page,
+  setPage,
+  dark,
+  zoom,
+  handle,
+  aspects,
+  onPageClick,
+  onPinch,
+  marks,
+}: LayoutProps & { aspects: number[] }) {
   const frame = useRef<HTMLDivElement>(null);
   const focal = useRef<Focal | null>(null);
   const size = useSize(frame);
@@ -272,7 +504,7 @@ function PdfScroll({ doc, page, setPage, dark, zoom, handle, aspects, onTap, onP
     ? `${preview.focal.x + frame.current.scrollLeft}px ${preview.focal.y + frame.current.scrollTop}px`
     : undefined;
   return (
-    <div className={`pdf-scroll ${dark ? "pdf-dark" : ""}`} ref={frame} onClick={(e) => isPageTap(e.nativeEvent) && onTap()}>
+    <div className={`pdf-scroll ${dark ? "pdf-dark" : ""}`} ref={frame} onClick={(e) => onPageClick(e.nativeEvent)}>
       <div
         className="pdf-column"
         style={{
@@ -284,7 +516,7 @@ function PdfScroll({ doc, page, setPage, dark, zoom, handle, aspects, onTap, onP
         {width > 0 &&
           tops.map((y, i) => (
             <div key={i} className="pdf-slot" style={{ top: y, width, height: aspects[i]! * width }}>
-              {near.has(i + 1) && <PageCanvas doc={doc} number={i + 1} width={width} />}
+              {near.has(i + 1) && <PdfPage doc={doc} number={i + 1} width={width} marks={marks.get(i + 1)} dark={dark} />}
             </div>
           ))}
       </div>
