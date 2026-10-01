@@ -1,6 +1,7 @@
 mod error;
 mod google;
 mod library;
+mod opened;
 mod store;
 mod sync;
 mod system_ui;
@@ -60,9 +61,24 @@ fn list_books(state: State<'_, AppState>) -> Result<Vec<Book>> {
 }
 
 /// The webview sends the file as a raw IPC body; metadata rides in a header.
+/// A command's binary body. Desktop webviews send it raw; Android's can only send text, so Tauri
+/// sends the bytes there as a JSON array of numbers.
+fn body_bytes<'a>(request: &'a Request<'_>) -> Result<std::borrow::Cow<'a, [u8]>> {
+    match request.body() {
+        InvokeBody::Raw(bytes) => Ok(std::borrow::Cow::Borrowed(bytes)),
+        InvokeBody::Json(serde_json::Value::Array(values)) => values
+            .iter()
+            .map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()).ok_or_else(|| Error::new("Expected bytes")))
+            .collect::<Result<Vec<u8>>>()
+            .map(std::borrow::Cow::Owned),
+        _ => bail!("Expected bytes"),
+    }
+}
+
 #[tauri::command]
 async fn import_book(request: Request<'_>, state: State<'_, AppState>) -> Result<Book> {
-    let InvokeBody::Raw(bytes) = request.body() else { bail!("Expected the book's bytes") };
+    let bytes = body_bytes(&request)?;
+    let bytes = bytes.as_ref();
     let meta = request
         .headers()
         .get("x-book-meta")
@@ -85,7 +101,8 @@ async fn read_book(id: String, state: State<'_, AppState>) -> Result<Response> {
 /// Raw IPC body: the rendered cover image; the book id rides in a header.
 #[tauri::command]
 async fn save_cover(request: Request<'_>, state: State<'_, AppState>) -> Result<()> {
-    let InvokeBody::Raw(image) = request.body() else { bail!("Expected the cover image") };
+    let image = body_bytes(&request)?;
+    let image = image.as_ref();
     let book = request.headers().get("x-book-id").and_then(|v| v.to_str().ok()).unwrap_or_default();
     library::set_cover(&state.store, book, image)
 }
@@ -102,9 +119,9 @@ async fn read_cover(id: String, state: State<'_, AppState>) -> Result<Response> 
 /// Chooses a cover for a book from the raw image body; an empty body goes back to the book's own.
 #[tauri::command]
 async fn set_book_cover(request: Request<'_>, state: State<'_, AppState>) -> Result<()> {
-    let InvokeBody::Raw(image) = request.body() else { bail!("Expected the cover image") };
+    let image = body_bytes(&request)?;
     let book = request.headers().get("x-book-id").and_then(|v| v.to_str().ok()).unwrap_or_default();
-    library::set_custom_cover(&state.store, book, (!image.is_empty()).then_some(image.as_slice()))?;
+    library::set_custom_cover(&state.store, book, (!image.is_empty()).then_some(image.as_ref()))?;
     state.sync.local_changed();
     Ok(())
 }
@@ -121,6 +138,21 @@ fn remove_book(id: String, state: State<'_, AppState>) -> Result<()> {
     library::remove(&state.store, &id)?;
     state.sync.local_changed();
     Ok(())
+}
+
+/// Imports a book opened with Reader from its own copy, so the bytes don't travel back through
+/// the webview (slow on Android, where they'd go as text). The webview sends the details it read.
+#[tauri::command]
+async fn import_opened_file(
+    id: u32,
+    meta: library::ImportMeta,
+    opened: State<'_, opened::Opened>,
+    state: State<'_, AppState>,
+) -> Result<Book> {
+    let bytes = opened.finish(id)?;
+    let book = library::import(&state.store, &bytes, meta)?;
+    state.sync.local_changed();
+    Ok(book)
 }
 
 #[tauri::command]
@@ -299,11 +331,14 @@ async fn check_apk_update() -> Result<Option<updates::Available>> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default();
+    // Files opened with Reader can arrive before anything else is set up.
+    let builder = tauri::Builder::default().manage(opened::Opened::default());
     // First of all plugins: a second launch (a deep link back from the Google sign-in page)
     // only brings this window forward; the deep-link plugin gets its URL.
     #[cfg(any(target_os = "windows", target_os = "linux"))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+        // Opening a book with Reader while it runs starts a second copy with the file's path.
+        app.state::<opened::Opened>().add_args(args.into_iter().skip(1), std::path::Path::new(&cwd));
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.unminimize();
             let _ = window.show();
@@ -317,9 +352,16 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_deep_link::init());
     #[cfg(target_os = "android")]
-    let builder = builder.plugin(google::plugin()).plugin(system_ui::plugin()).plugin(system_ui::updater());
+    let builder = builder
+        .plugin(google::plugin())
+        .plugin(system_ui::plugin())
+        .plugin(system_ui::updater())
+        .plugin(opened::android::plugin());
     builder
         .setup(|app| {
+            // Windows and Linux start Reader with the paths of the books it was asked to open.
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            app.state::<opened::Opened>().add_args(std::env::args().skip(1), &std::env::current_dir()?);
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let store = Arc::new(Store::open(&dir.join("reader.db"))?);
@@ -407,9 +449,24 @@ pub fn run() {
             check_apk_update,
             system_ui::install_update,
             open_link,
+            opened::take_opened_files,
+            opened::read_opened_file,
+            import_opened_file,
+            opened::watch_opened_files,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Reader");
+        .build(tauri::generate_context!())
+        .expect("error while building Reader")
+        .run(|_app, _event| {
+            // macOS hands over books opened with Reader (Open With, a double-click) as events.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = _event {
+                use tauri::Manager;
+                let opened = _app.state::<opened::Opened>();
+                for path in urls.iter().filter_map(|url| url.to_file_path().ok()) {
+                    opened.add(path, None, false);
+                }
+            }
+        });
 }
 
 #[cfg(all(test, not(target_os = "android")))]

@@ -8,6 +8,8 @@
 - `src-tauri/src/library.rs`: import, remove, progress, bookmarks and highlights. Every write is stamped with a revision in the same transaction.
 - `src-tauri/src/sync/`: `model.rs` (wire format and validation), `engine.rs` (the scheduler and sync algorithm, generic over a `Transport`), `drive.rs` (the Google Drive transport).
 - `src-tauri/src/google/`: `desktop.rs` (browser, PKCE, loopback callback that answers with a styled page and an `org.reader.books://connected` link back to the app, refresh token in the OS keychain) and `android.rs`, which calls `gen/android/.../GoogleAuthPlugin.kt` (Play services `AuthorizationClient`).
+- `src-tauri/src/opened.rs`: books handed to Reader by the system (macOS `RunEvent::Opened`, the launch arguments on Windows and Linux, a second launch through the single-instance plugin, and on Android `OpenedFilesPlugin.kt`, which copies VIEW and SEND intents' files into the cache). The webview takes the list, reads each file by id for its title, author and cover, and Rust imports it from its own copy. File associations are in `tauri.conf.json` (EPUB and PDF, PDF as an alternate handler on macOS) and `tauri.windows.conf.json` (EPUB only, because the NSIS installer makes a registered extension's default handler Reader).
+- Android's WebView can't send binary request bodies, so Tauri sends raw command bodies there as a JSON array of numbers; `body_bytes` in `lib.rs` accepts both.
 - `src-tauri/src/updates.rs` finds the newest Android release on GitHub. `system_ui::install_update` passes it to `AppUpdatePlugin.kt`, which downloads and verifies the APK and opens Android's installer.
 
 Tokens never enter the webview. The UI never sees Drive.

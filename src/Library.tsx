@@ -60,8 +60,7 @@ import {
 import { CollectionsSheet } from "./CollectionsSheet";
 import { NameSheet } from "@/components/NameSheet";
 import { Panel, useBackCloses } from "@/components/Panel";
-import { readMetadata } from "./metadata";
-import { makeCover } from "./covers";
+import { importBook } from "./imports";
 import { BadgedCover } from "./BookCover";
 import { EditDetails } from "./EditDetails";
 import { SyncPanel } from "./SyncPanel";
@@ -301,9 +300,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
     for (const file of Array.from(files ?? [])) {
       setImporting(file.name);
       try {
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        const book = await api.importBook(bytes, await readMetadata(file, bytes));
-        if (book.cover === null) void makeCover(book, bytes).then(onChanged);
+        await importBook(file, onChanged);
       } catch (e) {
         setError(`${file.name}: ${message(e)}`);
       }

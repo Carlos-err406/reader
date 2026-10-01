@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, message, onChanged, onStatus, type Book, type Status } from "./api";
 import { Library } from "./Library";
 import { Reader } from "./Reader";
+import { watchOpenedBooks } from "./imports";
 
 export function App() {
   const [books, setBooks] = useState<Book[]>([]);
@@ -52,6 +53,21 @@ export function App() {
     };
   }, []);
 
+  // A book opened with Reader from elsewhere (a file manager, Share, Open With) is added to the
+  // library and opened.
+  const latestOpen = useRef<(book: Book) => void>(() => {});
+  useEffect(() => {
+    watchOpenedBooks(
+      (books) => {
+        refresh();
+        const last = books[books.length - 1];
+        if (last) latestOpen.current(last);
+      },
+      (problem) => setError(problem),
+      refresh,
+    );
+  }, [refresh]);
+
   // Android's back button walks history, so the reader is a history entry.
   useEffect(() => {
     // Backing out of a panel inside the reader lands on the reader's own entry: stay there.
@@ -65,6 +81,12 @@ export function App() {
     if (history.state?.panel) history.replaceState({ book: book.id }, "");
     else history.pushState({ book: book.id }, "");
     setOpen({ book, at });
+  };
+  latestOpen.current = (book) => {
+    // Opening a book over another: the reader shows the new one in its place.
+    if (history.state?.book) history.replaceState({ book: book.id }, "");
+    else history.pushState({ book: book.id }, "");
+    setOpen({ book });
   };
   const close = useCallback(() => {
     if (history.state?.book) history.back();

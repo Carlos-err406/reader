@@ -104,6 +104,15 @@ export const api = {
       headers: { "x-book-meta": encodeURIComponent(JSON.stringify(meta)) },
     }),
   readBook: (id: string) => invoke<ArrayBuffer>("read_book", { id }),
+  /** Books opened with Reader from outside (Open With, Share) that haven't been taken yet. */
+  takeOpenedFiles: () => invoke<{ id: number; name: string }[]>("take_opened_files"),
+  /** An opened file's bytes, to read its title, author and cover. */
+  readOpenedFile: (id: number) => invoke<ArrayBuffer>("read_opened_file", { id }),
+  /** Imports an opened file from Rust's own copy; afterwards it's gone from the opened files. */
+  importOpenedFile: (id: number, meta: { title: string; author: string | null }) =>
+    invoke<Book>("import_opened_file", { id, meta }),
+  /** `channel` is told when more books are opened with Reader while it runs. */
+  watchOpenedFiles: (channel: Channel<null>) => invoke<void>("watch_opened_files", { channel }),
   removeBook: (id: string) => invoke<void>("remove_book", { id }),
   /** An empty image records that the book has no cover. */
   saveCover: (id: string, image: Uint8Array) => invoke<void>("save_cover", image, { headers: { "x-book-id": id } }),
