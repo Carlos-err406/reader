@@ -166,7 +166,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
   const tally = counts(books);
   const searching = query.trim().length > 0;
   // Continue reading leads All and Reading, unless searching; it isn't repeated in the list.
-  const resume = !searching && !selecting && (section === "all" || section === "reading") ? continueReading(books) : undefined;
+  const resume = !searching && (section === "all" || section === "reading") ? continueReading(books) : undefined;
   const shown = sortBooks(
     books.filter((b) => onShelf(b, section, collections ?? []) && matches(b, query) && b.id !== resume?.id),
     view.sort,
@@ -186,7 +186,10 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
       else next.add(book.id);
       return next;
     });
-  const allPicked = shown.length > 0 && shown.every((b) => selected?.has(b.id));
+  // The continue-reading book stays put while selecting (nothing jumps under the finger), and
+  // can be selected like the rest.
+  const selectable = resume ? [resume, ...shown] : shown;
+  const allPicked = selectable.length > 0 && selectable.every((b) => selected?.has(b.id));
   const favoritePicked = picked.length > 0 && picked.every((b) => b.favorite);
   const favoriteMany = () => void mark(Promise.all(picked.map((b) => api.setFavorite(b.id, !favoritePicked))).then(() => {}));
   const removeMany = async (list: Book[]) => {
@@ -203,6 +206,95 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
     window.addEventListener("keydown", keys, { capture: true });
     return () => window.removeEventListener("keydown", keys, { capture: true });
   }, [selecting]);
+  // Long press, then drag without lifting: every book between the pressed one and the finger
+  // is selected, as in photo galleries. Near the top or bottom of the screen the list scrolls.
+  const latestShown = useRef(shown);
+  latestShown.current = shown;
+  const latestSelected = useRef(selected);
+  latestSelected.current = selected;
+  const sweep = useRef<{ anchor: number; last: number; base: Set<string>; x: number; y: number; moved: boolean } | null>(null);
+  const sweepTo = (index: number) => {
+    const s = sweep.current;
+    if (!s) return;
+    const [from, to] = s.anchor < index ? [s.anchor, index] : [index, s.anchor];
+    const next = new Set(s.base);
+    for (const b of latestShown.current.slice(from, to + 1)) next.add(b.id);
+    setSelected(next);
+  };
+  const startSweep = (book: Book, x: number, y: number) => {
+    const anchor = latestShown.current.findIndex((b) => b.id === book.id);
+    if (anchor < 0) return;
+    sweep.current = { anchor, last: anchor, base: new Set(latestSelected.current ?? []), x, y, moved: false };
+    sweepTo(anchor);
+  };
+  useEffect(() => {
+    let frame = 0;
+    const under = (x: number, y: number) => {
+      const card = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-book-id]");
+      return card ? latestShown.current.findIndex((b) => b.id === card.dataset.bookId) : -1;
+    };
+    // The selection bar covers the bottom of the screen: the list ends at its top.
+    const bottom = () =>
+      document.querySelector('[role="toolbar"][aria-label="Selected books"]')?.getBoundingClientRect().top ?? window.innerHeight;
+    const follow = () => {
+      const s = sweep.current;
+      if (!s) return;
+      const index = under(s.x, Math.min(s.y, bottom() - 8));
+      if (index >= 0 && index !== s.last) {
+        s.last = index;
+        sweepTo(index);
+      }
+    };
+    const scroll = () => {
+      frame = 0;
+      const s = sweep.current;
+      if (!s) return;
+      const edge = 96;
+      const end = bottom();
+      const speed = s.y < edge ? -(edge - s.y) : s.y > end - edge ? Math.min(edge, s.y - (end - edge)) : 0;
+      if (!speed) return;
+      window.scrollBy(0, (speed / edge) * 18);
+      follow();
+      frame = requestAnimationFrame(scroll);
+    };
+    const move = (e: TouchEvent) => {
+      const s = sweep.current;
+      if (!s || !e.touches[0]) return;
+      // The finger selects instead of scrolling the page.
+      e.preventDefault();
+      s.x = e.touches[0].clientX;
+      s.y = e.touches[0].clientY;
+      s.moved = true;
+      follow();
+      if (!frame) frame = requestAnimationFrame(scroll);
+    };
+    const end = () => {
+      const s = sweep.current;
+      if (!s) return;
+      sweep.current = null;
+      cancelAnimationFrame(frame);
+      frame = 0;
+      // Lifting the finger over another book mustn't also tap it.
+      if (s.moved) {
+        const swallow = (e: MouseEvent) => {
+          e.stopPropagation();
+          e.preventDefault();
+        };
+        window.addEventListener("click", swallow, { capture: true, once: true });
+        setTimeout(() => window.removeEventListener("click", swallow, { capture: true }), 400);
+      }
+    };
+    window.addEventListener("touchmove", move, { passive: false });
+    window.addEventListener("touchend", end);
+    window.addEventListener("touchcancel", end);
+    return () => {
+      window.removeEventListener("touchmove", move);
+      window.removeEventListener("touchend", end);
+      window.removeEventListener("touchcancel", end);
+      cancelAnimationFrame(frame);
+    };
+  }, []);
+
   const attention = status && ["warn", "error"].includes(statusLine(status).tone);
   const pick = (shelf: Shelf) => {
     setView({ section: shelf });
@@ -219,7 +311,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
     setRefreshing(true);
     api.syncNow().then(onStatus, (e) => setError(message(e)));
   }, [onStatus]);
-  const pull = usePullToSync(pullSync, !!status?.enabled && !showSync && !showDisplay);
+  const pull = usePullToSync(pullSync, !!status?.enabled && !showSync && !showDisplay && !selecting);
   // Like native pull-to-refresh: the page stays lowered, spinner in the gap, until the sync ends.
   const offset = pull || (refreshing ? 56 : 0);
 
@@ -578,7 +670,16 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
             {status && <UpdateBanner platform={status.platform} />}
             {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
 
-            {resume && <ContinueCard book={resume} tags={tagsOf(resume)} onOpen={() => onOpen(resume)} actions={actionsFor(resume)} />}
+            {resume && (
+              <ContinueCard
+                book={resume}
+                tags={tagsOf(resume)}
+                onOpen={() => onOpen(resume)}
+                actions={actionsFor(resume)}
+                selection={selecting ? !!selected?.has(resume.id) : undefined}
+                onToggle={() => toggleSelected(resume)}
+              />
+            )}
 
             {books.length === 0 ? (
               <div className="px-4 py-16 text-center">
@@ -606,10 +707,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
                       onOpen={() => (selecting ? toggleSelected(book) : onOpen(book))}
                       actions={actionsFor(book)}
                       selection={selecting ? !!selected?.has(book.id) : undefined}
-                      onLongPress={() => {
-                        setSelected((old) => old ?? new Set());
-                        toggleSelected(book);
-                      }}
+                      onLongPress={(x, y) => startSweep(book, x, y)}
                     />
                   ))}
                 </ul>
@@ -658,7 +756,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
             <span className="min-w-0 flex-1 truncate text-sm font-medium" aria-live="polite">
               {picked.length === 0 ? "Select books" : `${picked.length} selected`}
             </span>
-            <Button variant="ghost" size="sm" onClick={() => setSelected(allPicked ? new Set() : new Set(shown.map((b) => b.id)))}>
+            <Button variant="ghost" size="sm" onClick={() => setSelected(allPicked ? new Set() : new Set(selectable.map((b) => b.id)))}>
               {allPicked ? "None" : "All"}
             </Button>
             <Button variant="ghost" size={wide ? "sm" : "icon"} disabled={!picked.length} onClick={() => setFiling(picked)} aria-label="Add to collection">
@@ -797,6 +895,21 @@ function CollectionMenu({ collection, onRename, onDelete }: { collection: Collec
   );
 }
 
+/** The check circle on a cover while selecting. */
+function SelectMark({ on }: { on: boolean }) {
+  return (
+    <span
+      className={cn(
+        "absolute -top-1.5 -left-1.5 grid size-6 place-items-center rounded-full border-2 bg-card shadow-sm",
+        on ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40",
+      )}
+      aria-hidden="true"
+    >
+      {on && <Check className="size-3.5" strokeWidth={3} />}
+    </span>
+  );
+}
+
 /** The cover, with a star on favorites. */
 function BadgedCover({ book, large }: { book: Book; large?: boolean }) {
   return (
@@ -817,14 +930,39 @@ function SectionIcon({ section }: { section: Section }) {
 }
 
 /** The last book read and not finished, to pick up where you left off. */
-function ContinueCard({ book, tags, onOpen, actions }: { book: Book; tags: string[]; onOpen: () => void; actions: BookActions }) {
+interface ContinueProps {
+  book: Book;
+  tags: string[];
+  onOpen: () => void;
+  actions: BookActions;
+  /** While selecting books: whether this one is selected. */
+  selection?: boolean;
+  onToggle: () => void;
+}
+
+function ContinueCard({ book, tags, onOpen, actions, selection, onToggle }: ContinueProps) {
   const percent = Math.round((book.progress?.fraction ?? 0) * 100);
+  const selecting = selection !== undefined;
   return (
     <section aria-label="Continue reading" className="mb-6">
       <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Continue reading</h2>
-      <div className="relative flex gap-4 rounded-2xl border bg-card p-4 pr-10">
-        <BookMenu book={book} actions={actions} />
-        <BadgedCover book={book} large />
+      <div
+        className={cn(
+          "relative flex gap-4 rounded-2xl border bg-card p-4 pr-10",
+          selecting && "cursor-pointer select-none",
+          selection && "border-primary ring-2 ring-primary",
+        )}
+        role={selecting ? "button" : undefined}
+        aria-pressed={selecting ? selection : undefined}
+        tabIndex={selecting ? 0 : undefined}
+        onClick={selecting ? onToggle : undefined}
+        onKeyDown={selecting ? (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onToggle()) : undefined}
+      >
+        {!selecting && <BookMenu book={book} actions={actions} />}
+        <span className="relative block shrink-0 self-start">
+          <BadgedCover book={book} large />
+          {selecting && <SelectMark on={!!selection} />}
+        </span>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <strong className="line-clamp-2 font-serif text-xl leading-snug">{book.title}</strong>
           {book.author && <span className="truncate text-sm">{book.author}</span>}
@@ -845,7 +983,7 @@ function ContinueCard({ book, tags, onOpen, actions }: { book: Book; tags: strin
             </div>
             <span className="text-xs text-muted-foreground tabular-nums">{percent}%</span>
           </div>
-          <Button className="mt-2 self-start rounded-full" onClick={onOpen}>
+          <Button className={cn("mt-2 self-start rounded-full", selecting && "invisible")} onClick={onOpen} tabIndex={selecting ? -1 : undefined}>
             <BookOpen />
             Resume
           </Button>
@@ -908,8 +1046,8 @@ interface CardProps {
   actions: BookActions;
   /** While selecting books: whether this one is selected. */
   selection?: boolean;
-  /** A long press on a touch screen starts selecting, with this book. */
-  onLongPress: () => void;
+  /** A long press on a touch screen starts selecting from this book, at the finger. */
+  onLongPress: (x: number, y: number) => void;
 }
 
 const LONG_PRESS = 450;
@@ -922,7 +1060,7 @@ function BookCard({ book, tags, onOpen, actions, selection, onLongPress }: CardP
     if (press.current) clearTimeout(press.current.timer);
   };
   return (
-    <li className={cn("relative", !book.available && !selecting && "opacity-70")}>
+    <li className={cn("relative", !book.available && !selecting && "opacity-70")} data-book-id={book.id}>
       <button
         className={cn(
           "flex w-full gap-3.5 rounded-xl border bg-card p-3 text-left transition-colors outline-none select-none [-webkit-touch-callout:none] hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring disabled:cursor-default disabled:hover:bg-card",
@@ -931,11 +1069,16 @@ function BookCard({ book, tags, onOpen, actions, selection, onLongPress }: CardP
         aria-pressed={selecting ? selection : undefined}
         onPointerDown={(e) => {
           if (e.pointerType !== "touch") return;
-          const state = { x: e.clientX, y: e.clientY, fired: false, timer: setTimeout(() => {
-            state.fired = true;
-            navigator.vibrate?.(12);
-            onLongPress();
-          }, LONG_PRESS) };
+          const state = {
+            x: e.clientX,
+            y: e.clientY,
+            fired: false,
+            timer: setTimeout(() => {
+              state.fired = true;
+              navigator.vibrate?.(12);
+              onLongPress(state.x, state.y);
+            }, LONG_PRESS),
+          };
           press.current = state;
         }}
         onPointerMove={(e) => {
@@ -957,17 +1100,7 @@ function BookCard({ book, tags, onOpen, actions, selection, onLongPress }: CardP
       >
         <span className="relative block shrink-0 self-start">
           <BadgedCover book={book} />
-          {selecting && (
-            <span
-              className={cn(
-                "absolute -top-1.5 -left-1.5 grid size-6 place-items-center rounded-full border-2 bg-card shadow-sm",
-                selection ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40",
-              )}
-              aria-hidden="true"
-            >
-              {selection && <Check className="size-3.5" strokeWidth={3} />}
-            </span>
-          )}
+          {selecting && <SelectMark on={!!selection} />}
         </span>
         <div className="flex min-w-0 flex-1 flex-col gap-1 pr-7">
           <strong className="line-clamp-2">{book.title}</strong>

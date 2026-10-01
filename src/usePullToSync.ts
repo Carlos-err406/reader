@@ -35,6 +35,8 @@ export function usePullToSync(onSync: () => void, enabled: boolean): number {
     window.addEventListener("touchend", end);
     window.addEventListener("touchcancel", end);
     return () => {
+      // Turned off mid-pull (selecting books started): don't leave the page lowered.
+      setPull(0);
       window.removeEventListener("touchstart", start);
       window.removeEventListener("touchmove", move);
       window.removeEventListener("touchend", end);
