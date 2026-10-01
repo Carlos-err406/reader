@@ -448,6 +448,31 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
             <aside className="sticky top-4 w-52 shrink-0 self-start pt-2" aria-label="Library sections">
               <h1 className="mb-4 px-3 font-serif text-3xl font-semibold">Library</h1>
               {nav((shelf) => setView({ section: shelf }), (open) => open())}
+              <div className="mt-2 grid gap-0.5 border-t pt-2">
+                {status && (
+                  <button
+                    type="button"
+                    onClick={() => setShowSync(true)}
+                    aria-haspopup="dialog"
+                    aria-label={`Sync: ${statusLine(status).text}`}
+                    className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-muted-foreground transition-colors outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring"
+                  >
+                    <span className="grid size-4 place-items-center">
+                      <span className={cn("dot", statusLine(status).tone)} />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{statusLine(status).text}</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowAbout(true)}
+                  aria-haspopup="dialog"
+                  className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-muted-foreground transition-colors outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring"
+                >
+                  <Info className="size-4" />
+                  About Reader
+                </button>
+              </div>
             </aside>
           )}
 
@@ -760,32 +785,6 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
                   ))}
                 </ul>
               </>
-            )}
-            {wide && (
-              <footer className="mt-8 flex flex-wrap items-center justify-center gap-x-1 gap-y-2">
-                {status && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="max-w-full min-w-0 text-muted-foreground"
-                    onClick={() => setShowSync(true)}
-                    aria-haspopup="dialog"
-                    aria-label={`Sync: ${statusLine(status).text}`}
-                  >
-                    <span className={cn("dot", statusLine(status).tone)} />
-                    <span className="truncate">{statusLine(status).text}</span>
-                  </Button>
-                )}
-                {status && (
-                  <span className="text-muted-foreground" aria-hidden="true">
-                    ·
-                  </span>
-                )}
-                <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => setShowAbout(true)}>
-                  <Info />
-                  About Reader
-                </Button>
-              </footer>
             )}
           </div>
         </div>

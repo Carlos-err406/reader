@@ -2,7 +2,7 @@
 //! so work started before pause/background is never applied afterwards.
 use crate::error::{bail, Error, Result, OFFLINE};
 use crate::store::{now_ms, Changed, Store};
-use crate::sync::model::{canonical, validate_checkpoint, Checkpoint, Kind, Record, CHECKPOINT_FORMAT};
+use crate::sync::model::{canonical, known_kinds, validate_checkpoint, Checkpoint, Kind, Record, CHECKPOINT_FORMAT};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -314,9 +314,13 @@ impl<T: Transport> Engine<T> {
         }
         self.current(generation)?;
         let seen: Vec<String> = latest.values().map(|f| format!("seen:{}", f.id)).collect();
+        let kinds = known_kinds();
         for file in latest.values() {
             let key = format!("seen:{}", file.id);
-            if self.store.meta(&key)?.as_deref() == Some(file.sha256.as_str()) {
+            // Read before by a version that knew fewer kinds, which skipped those records: read
+            // it again now that they can be applied.
+            let marker = format!("{} {kinds}", file.sha256);
+            if self.store.meta(&key)?.as_deref() == Some(marker.as_str()) {
                 continue;
             }
             self.working("Downloading changes from your other device");
@@ -326,7 +330,7 @@ impl<T: Transport> Engine<T> {
                 bail!("Sync checkpoint identity mismatch");
             }
             let changed = self.store.apply(&checkpoint.records)?;
-            self.store.set_meta(&key, &file.sha256)?;
+            self.store.set_meta(&key, &marker)?;
             if changed.iter().any(|c| c.kind == Kind::Book) {
                 self.store.release_deleted_blobs()?;
             }
@@ -522,6 +526,40 @@ mod tests {
         sync(&desktop).await.unwrap();
         assert_eq!(desktop.store.progress(&book).unwrap().unwrap().location, "57");
         assert!(!desktop.status().pending && !phone.status().pending);
+    }
+
+    #[tokio::test]
+    async fn checkpoints_read_by_an_older_version_are_read_again() {
+        let remote = Fake::default();
+        let (phone, desktop) = (device(&remote), device(&remote));
+        let book = import(&phone, b"%PDF-1.7 book");
+        let collection = "0b8e8a52-6f1c-4d1e-9a39-1d5f0c6f6c11";
+        phone
+            .store
+            .stamp(vec![(Kind::Collection, collection.into(), Some(json!({ "name": "Finance", "createdAt": 1 })))])
+            .unwrap();
+        phone
+            .store
+            .stamp(vec![(Kind::Member, format!("{collection}:{book}"), Some(json!({ "at": 1 })))])
+            .unwrap();
+        sync(&phone).await.unwrap();
+
+        // An older desktop read the phone's checkpoint without knowing collections: it took the
+        // book, skipped the rest and marked the checkpoint read the old way (just its hash).
+        let file = remote.0.lock().unwrap().files.last().unwrap().0.clone();
+        let only_book: Vec<Record> = phone.store.records().unwrap().into_iter().filter(|r| r.kind == Kind::Book).collect();
+        desktop.store.apply(&only_book).unwrap();
+        desktop.store.set_meta(&format!("seen:{}", file.id), &file.sha256).unwrap();
+
+        sync(&desktop).await.unwrap();
+        let collections = desktop.store.collections().unwrap();
+        assert_eq!(collections.len(), 1);
+        assert_eq!(collections[0].books, [book]);
+        // And once read with every kind known, it isn't read again.
+        assert_eq!(
+            desktop.store.meta(&format!("seen:{}", file.id)).unwrap(),
+            Some(format!("{} {}", file.sha256, known_kinds()))
+        );
     }
 
     #[tokio::test]

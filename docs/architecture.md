@@ -38,6 +38,7 @@ A book's place in a collection is its own `member` record, so adding books to a 
 - **Order of a run:** list checkpoints, then read each device's newest unseen checkpoint, validate it fully, and apply it in one transaction. Next, upload any local books that are missing on Drive, publish the pending checkpoint, prune old ones, and finally download books this device lacks. Progress sync never waits for large book downloads.
 - **Books** are Drive files tagged `kind=book, bookSha=<sha>`. Uploads use resumable upload and are verified with Drive's `sha256Checksum` and size. Downloads are verified against the SHA-256.
 - **Scheduling:** one job at a time. Edits are debounced by 2 s, polling runs every 30 s, and failures back off exponentially up to 1 h. On Android, sync runs only while the app is visible. Every await is followed by a generation check, so pausing or going to the background cancels work before it is applied.
+- **Read markers:** each device remembers the checkpoints it has read, together with the record kinds it knew then, so a version that learns new kinds reads them all once more.
 - **Newer record kinds:** a checkpoint record whose kind this version doesn't know is skipped, so an older device keeps syncing everything else. Versions before 0.1.4 reject such checkpoints, so highlights need every device on 0.1.4 or later.
 - **Account pinning:** the Drive `permissionId` is stored when sync is enabled. If a different account shows up, sync pauses instead of merging libraries.
 

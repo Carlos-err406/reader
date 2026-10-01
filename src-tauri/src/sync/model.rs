@@ -73,19 +73,30 @@ impl Kind {
         }
     }
 
+    /// Every kind this version understands.
+    pub const ALL: [Kind; 8] = [
+        Kind::Book,
+        Kind::Progress,
+        Kind::Bookmark,
+        Kind::Highlight,
+        Kind::Favorite,
+        Kind::Finished,
+        Kind::Collection,
+        Kind::Member,
+    ];
+
     pub fn parse(value: &str) -> Result<Self> {
-        match value {
-            "book" => Ok(Kind::Book),
-            "progress" => Ok(Kind::Progress),
-            "bookmark" => Ok(Kind::Bookmark),
-            "highlight" => Ok(Kind::Highlight),
-            "favorite" => Ok(Kind::Favorite),
-            "finished" => Ok(Kind::Finished),
-            "collection" => Ok(Kind::Collection),
-            "member" => Ok(Kind::Member),
-            _ => bail!("Unknown record kind"),
+        match Self::ALL.into_iter().find(|k| k.as_str() == value) {
+            Some(kind) => Ok(kind),
+            None => bail!("Unknown record kind"),
         }
     }
+}
+
+/// The record kinds this version reads, recorded with each checkpoint it has read. A version
+/// that knew fewer skipped some records, so a newer one reads that checkpoint again.
+pub fn known_kinds() -> String {
+    Kind::ALL.map(Kind::as_str).join(",")
 }
 
 /// `value: None` is a tombstone. Deletions are records, so remote absence never deletes.
