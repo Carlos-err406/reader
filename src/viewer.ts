@@ -1,6 +1,7 @@
 import type { Highlight, Position } from "./api";
 import type { Layout } from "./display";
 import type { Rect, TextSelection } from "./highlights";
+import type { OnFound, SearchHit } from "./search";
 
 /** A table-of-contents entry. */
 export interface TocEntry {
@@ -67,6 +68,8 @@ export interface ViewerProps {
   onHighlightTap: (id: string, rect: Rect) => void;
   /** The book's table of contents, once known (empty when it has none). */
   onContents: (entries: TocEntry[]) => void;
+  /** The search match to mark on the page, if any. */
+  found: SearchHit | null;
 }
 
 /** Taps on links or while selecting text are for the book, not for the controls. */
@@ -90,4 +93,6 @@ export interface ViewerHandle {
   glide(forward: boolean): void;
   /** `save: false` when following another device, so its exact position is kept. */
   goTo(location: string, save?: boolean): void;
+  /** Searches the whole book, reporting matches as it goes, until done or aborted. */
+  search(query: string, onFound: OnFound, signal: AbortSignal): Promise<void>;
 }

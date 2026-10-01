@@ -6,8 +6,10 @@ import { pdfPage, pdfPosition } from "./format";
 import { attachPinch, MAX_ZOOM, MIN_ZOOM, type Focal } from "./pinch";
 import { GLIDE, isPageTap, type TocEntry, type ViewerHandle, type ViewerProps } from "./viewer";
 import { attachTextLayer } from "./pdfText";
+import { excerpt, foldQuery, matches, MAX_HITS, type OnFound, type SearchHit } from "./search";
 import {
   byAge,
+  SEARCH_MARK,
   mergeLines,
   pdfHighlightLocation,
   pdfHighlightRects,
@@ -21,6 +23,73 @@ import {
 const MAX_CANVAS = 4096;
 
 type Outline = Awaited<ReturnType<PDFDocumentProxy["getOutline"]>>;
+
+/** A page's text as PDF.js lays it out: its runs in order, a line break after each line. */
+async function pageText(doc: PDFDocumentProxy, number: number): Promise<string> {
+  const content = await (await doc.getPage(number)).getTextContent();
+  return content.items.map((item) => ("str" in item ? item.str + (item.hasEOL ? "\n" : "") : "")).join("");
+}
+
+async function searchPdf(doc: PDFDocumentProxy, query: string, onFound: OnFound, signal: AbortSignal) {
+  const folded = foldQuery(query);
+  if (folded.length < 2) return onFound([], 1);
+  let total = 0;
+  for (let page = 1; page <= doc.numPages; page++) {
+    if (signal.aborted) return;
+    let hits: SearchHit[] = [];
+    try {
+      const text = await pageText(doc, page);
+      hits = matches(text, folded)
+        .slice(0, MAX_HITS - total)
+        .map(([start, end], nth) => ({
+          location: String(page),
+          order: page,
+          nth,
+          fraction: page / doc.numPages,
+          excerpt: excerpt(text, start, end),
+        }));
+    } catch {
+      // An unreadable page: nothing found on it.
+    }
+    if (signal.aborted) return;
+    total += hits.length;
+    onFound(hits, page / doc.numPages);
+    if (total >= MAX_HITS) return onFound([], 1);
+  }
+}
+
+/**
+ * Marks a search match in a page's text layer, whose text is the page's runs in the same order
+ * (line breaks as <br>), and brings it into view.
+ */
+function markInLayer(layer: HTMLElement, query: string, nth: number) {
+  const nodes: { node: Text | null; start: number }[] = [];
+  let text = "";
+  const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (n instanceof Text && !n.parentElement?.closest(".endOfContent")) {
+      nodes.push({ node: n, start: text.length });
+      text += n.data;
+    } else if (n instanceof HTMLBRElement) text += "\n";
+  }
+  const found = matches(text, foldQuery(query))[nth];
+  const registry = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
+  const Highlight = (window as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
+  if (!found || !registry || !Highlight) return;
+  const at = (pos: number): [Text, number] => {
+    let i = nodes.length - 1;
+    while (i > 0 && nodes[i]!.start > pos) i--;
+    const { node, start } = nodes[i]!;
+    return [node!, Math.min(pos - start, node!.length)];
+  };
+  const range = document.createRange();
+  const [startNode, startOffset] = at(found[0]);
+  const [endNode, endOffset] = at(found[1] - 1);
+  range.setStart(startNode, startOffset);
+  range.setEnd(endNode, Math.min(endOffset + 1, endNode.length));
+  registry.set(SEARCH_MARK, new Highlight(range));
+  startNode.parentElement?.scrollIntoView({ block: "center", behavior: "smooth" });
+}
 
 /** The document's outline (its bookmarks panel), each entry resolved to the page it opens. */
 async function tableOfContents(doc: PDFDocumentProxy): Promise<TocEntry[]> {
@@ -70,6 +139,7 @@ function PdfPage({
   height,
   marks,
   dark,
+  found,
 }: {
   doc: PDFDocumentProxy;
   number: number;
@@ -77,10 +147,14 @@ function PdfPage({
   height?: number;
   marks: Mark[] | undefined;
   dark: boolean;
+  /** The search match to mark, when it's on this page. */
+  found?: { query: string; nth: number };
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const text = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState<{ width: number; height: number }>();
+  // Bumped each time the text layer finishes, so a search match can be marked in it.
+  const [words, setWords] = useState(0);
   useEffect(() => {
     const target = canvas.current;
     const layer = text.current;
@@ -110,7 +184,9 @@ function PdfPage({
       });
       words.render().then(
         () => {
-          if (!cancelled) detach = attachTextLayer(layer);
+          if (cancelled) return;
+          detach = attachTextLayer(layer);
+          setWords((n) => n + 1);
         },
         () => {},
       );
@@ -122,6 +198,9 @@ function PdfPage({
       detach();
     };
   }, [doc, number, width, height]);
+  useEffect(() => {
+    if (found && words && text.current) markInLayer(text.current, found.query, found.nth);
+  }, [found?.query, found?.nth, words]);
   return (
     <div className="pdf-page" data-page={number} style={box}>
       <canvas ref={canvas} />
@@ -229,11 +308,13 @@ function usePinch(
 }
 
 export const PdfView = forwardRef<ViewerHandle, ViewerProps>(function PdfView(
-  { data, initial, layout, dark, zoom, onMove, onError, onTap, onPinch, highlights, onSelect, onHighlightTap, onContents },
+  { data, initial, layout, dark, zoom, onMove, onError, onTap, onPinch, highlights, onSelect, onHighlightTap, onContents, found },
   ref,
 ) {
   const [doc, setDoc] = useState<PDFDocumentProxy>();
   const root = useRef<HTMLDivElement>(null);
+  // The query the current results came from, to find a match again in a page's text layer.
+  const lastQuery = useRef("");
   const selected = useRef(onSelect);
   selected.current = onSelect;
   // Shared by both layouts, so switching keeps the page.
@@ -368,8 +449,16 @@ export const PdfView = forwardRef<ViewerHandle, ViewerProps>(function PdfView(
     onTap();
   };
 
+  // The match being looked at: cleared from the page it was on when another is chosen.
+  useEffect(() => {
+    if (!found) (CSS as unknown as { highlights?: Map<string, unknown> }).highlights?.delete(SEARCH_MARK);
+  }, [found]);
   if (!doc || !page) return <div className="pdf-frame" />;
-  const shared = { doc, page, setPage, dark, zoom, handle: ref, onPageClick, onPinch, marks };
+  const mark = found && found.nth !== undefined ? { page: found.order, query: lastQuery.current, nth: found.nth } : undefined;
+  const shared = { doc, page, setPage, dark, zoom, handle: ref, onPageClick, onPinch, marks, mark, search: (q: string, f: OnFound, s: AbortSignal) => {
+    lastQuery.current = q;
+    return searchPdf(doc, q, f, s);
+  } };
   return (
     <div ref={root} className="contents">
       {layout === "scroll" ? <PdfScroll {...shared} aspects={aspects} /> : <PdfPages {...shared} />}
@@ -387,9 +476,11 @@ interface LayoutProps {
   onPageClick: (e: MouseEvent) => void;
   onPinch: ViewerProps["onPinch"];
   marks: Map<number, Mark[]>;
+  mark: { page: number; query: string; nth: number } | undefined;
+  search: (query: string, onFound: OnFound, signal: AbortSignal) => Promise<void>;
 }
 
-function PdfPages({ doc, page, setPage, dark, zoom, handle, onPageClick, onPinch, marks }: LayoutProps) {
+function PdfPages({ doc, page, setPage, dark, zoom, handle, onPageClick, onPinch, marks, mark, search }: LayoutProps) {
   const frame = useRef<HTMLDivElement>(null);
   const focal = useRef<Focal | null>(null);
   const size = useSize(frame);
@@ -403,8 +494,9 @@ function PdfPages({ doc, page, setPage, dark, zoom, handle, onPageClick, onPinch
       prev: () => setPage((p) => Math.max(p - 1, 1)),
       glide: (forward) => setPage((p) => Math.min(Math.max(p + (forward ? 1 : -1), 1), pages)),
       goTo: (location) => setPage(pdfPage(location, pages)),
+      search,
     }),
-    [pages, setPage],
+    [pages, setPage, search],
   );
   return (
     <div
@@ -423,6 +515,7 @@ function PdfPages({ doc, page, setPage, dark, zoom, handle, onPageClick, onPinch
           height={size.height * zoom}
           marks={marks.get(page)}
           dark={dark}
+          found={mark?.page === page ? mark : undefined}
         />
       </div>
     </div>
@@ -443,6 +536,8 @@ function PdfScroll({
   onPageClick,
   onPinch,
   marks,
+  mark,
+  search,
 }: LayoutProps & { aspects: number[] }) {
   const frame = useRef<HTMLDivElement>(null);
   const focal = useRef<Focal | null>(null);
@@ -532,8 +627,9 @@ function PdfScroll({
         const target = pdfPage(location, doc.numPages);
         frame.current?.scrollTo({ top: tops[target - 1]! - GAP, behavior: "smooth" });
       },
+      search,
     }),
-    [doc, width, aspects],
+    [doc, width, aspects, search],
   );
 
   const origin = preview && frame.current
@@ -552,7 +648,16 @@ function PdfScroll({
         {width > 0 &&
           tops.map((y, i) => (
             <div key={i} className="pdf-slot" style={{ top: y, width, height: aspects[i]! * width }}>
-              {near.has(i + 1) && <PdfPage doc={doc} number={i + 1} width={width} marks={marks.get(i + 1)} dark={dark} />}
+              {near.has(i + 1) && (
+                <PdfPage
+                  doc={doc}
+                  number={i + 1}
+                  width={width}
+                  marks={marks.get(i + 1)}
+                  dark={dark}
+                  found={mark?.page === i + 1 ? mark : undefined}
+                />
+              )}
             </div>
           ))}
       </div>

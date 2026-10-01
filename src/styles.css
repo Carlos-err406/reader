@@ -323,3 +323,9 @@
 .turn.next {
   right: 0;
 }
+
+/* The search match being looked at, over a PDF's text layer (EPUB chapters get theirs in
+   highlightCss). */
+::highlight(reader-search) {
+  background-color: rgb(255 140 0 / 0.5);
+}

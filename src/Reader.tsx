@@ -20,10 +20,17 @@ import { useDisplay } from "./useDisplay";
 import type { Rect, TextSelection } from "./highlights";
 import { HighlightToolbar } from "./HighlightToolbar";
 import { MarksPanel } from "./MarksPanel";
+import { SearchPanel } from "./SearchPanel";
+import type { SearchHit } from "./search";
+import { currentEntry } from "./viewer";
 import {
   Bookmark as BookmarkIcon,
   BookmarkCheck,
+  ChevronDown,
   ChevronLeft,
+  ChevronUp,
+  Search,
+  X,
   List,
   Maximize2,
   Minimize2,
@@ -237,6 +244,48 @@ export function Reader({ book, at, onClose }: Props) {
   const floating = useRef(false);
   floating.current = !!selection || !!menu;
 
+  // Searching the book: matches arrive as it's read through; one of them may be on screen.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<SearchHit[]>([]);
+  const [done, setDone] = useState(1);
+  const [active, setActive] = useState(-1);
+  useEffect(() => {
+    setHits([]);
+    setActive(-1);
+    if (query.trim().length < 2) return setDone(1);
+    setDone(0);
+    const stop = new AbortController();
+    // Wait for typing to pause before reading the whole book.
+    const start = setTimeout(() => {
+      void viewer.current
+        ?.search(
+          query,
+          (batch, progress) => {
+            if (stop.signal.aborted) return;
+            if (batch.length) setHits((old) => [...old, ...batch]);
+            setDone(progress);
+          },
+          stop.signal,
+        )
+        .catch(() => setDone(1));
+    }, 300);
+    return () => {
+      clearTimeout(start);
+      stop.abort();
+    };
+  }, [query]);
+  const showHit = (index: number) => {
+    const hit = hits[index];
+    if (!hit) return;
+    setActive(index);
+    setSearchOpen(false);
+    viewer.current?.goTo(hit.location, true);
+  };
+  const step = (by: 1 | -1) => hits.length && showHit((active + by + hits.length) % hits.length);
+  const stepping = useRef<{ active: number; step: typeof step }>({ active, step });
+  stepping.current = { active, step };
+
   useEffect(() => {
     const keys = (e: KeyboardEvent) => {
       // An open panel, popover or menu owns the keyboard (Escape closes it, not the book).
@@ -245,6 +294,19 @@ export function Reader({ book, at, onClose }: Props) {
         e.preventDefault();
         setMenu(null);
         setSelection((s) => (s?.clear(), null));
+        return;
+      }
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setSearchOpen(true);
+        return;
+      }
+      // Stepping through matches: ⌘G and ⇧⌘G, as in other apps; Escape stops showing them.
+      if (stepping.current.active >= 0 && ((mod && e.key.toLowerCase() === "g") || e.key === "Escape")) {
+        e.preventDefault();
+        if (e.key === "Escape") setActive(-1);
+        else stepping.current.step(e.shiftKey ? -1 : 1);
         return;
       }
       if (["ArrowRight", "PageDown", " "].includes(e.key)) viewer.current?.next();
@@ -400,6 +462,7 @@ export function Reader({ book, at, onClose }: Props) {
             onSelect={onSelect}
             onHighlightTap={onHighlightTap}
             onContents={onContents}
+            found={active >= 0 ? (hits[active] ?? null) : null}
           />
         )}
         {display.layout === "pages" && (
@@ -444,6 +507,9 @@ export function Reader({ book, at, onClose }: Props) {
         </Button>
         <Button variant="ghost" size="icon-lg" onClick={() => setShowDisplay(true)} aria-label="Display settings">
           <Type className="size-5" />
+        </Button>
+        <Button variant="ghost" size="icon-lg" onClick={() => setSearchOpen(true)} aria-label="Search in book">
+          <Search className="size-5" />
         </Button>
         <Button variant="ghost" size="icon-lg" onClick={() => setPanel(true)} aria-label="Contents, highlights and bookmarks">
           <List className="size-5" />
@@ -560,6 +626,53 @@ export function Reader({ book, at, onClose }: Props) {
         />
       )}
 
+      <SearchPanel
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        query={query}
+        onQuery={setQuery}
+        hits={hits}
+        done={done}
+        active={active}
+        onPick={showHit}
+        placeOf={(hit) => {
+          if (pdf) return `Page ${hit.order}`;
+          const percent = `${Math.round(hit.fraction * 100)}%`;
+          const chapter = contents ? contents[currentEntry(contents, hit.order)]?.label : undefined;
+          return chapter ? `${chapter} · ${percent}` : percent;
+        }}
+      />
+      {active >= 0 && !searchOpen && (
+        <div
+          role="toolbar"
+          aria-label="Search matches"
+          className={cn(
+            "absolute left-1/2 z-30 flex -translate-x-1/2 items-center gap-0.5 rounded-full border bg-popover/95 p-1 text-sm shadow-lg backdrop-blur transition-[bottom] duration-200",
+            chrome ? "bottom-[calc(env(safe-area-inset-bottom)+5.5rem)]" : "bottom-[calc(env(safe-area-inset-bottom)+1rem)]",
+          )}
+        >
+          <Button variant="ghost" size="icon-sm" className="rounded-full" aria-label="Previous match" onClick={() => step(-1)}>
+            <ChevronUp />
+          </Button>
+          <span className="min-w-16 px-1 text-center tabular-nums" aria-live="polite">
+            {active + 1} of {hits.length}
+          </span>
+          <Button variant="ghost" size="icon-sm" className="rounded-full" aria-label="Next match" onClick={() => step(1)}>
+            <ChevronDown />
+          </Button>
+          <button
+            type="button"
+            className="max-w-36 truncate rounded-full px-2 py-1 text-muted-foreground hover:bg-accent"
+            onClick={() => setSearchOpen(true)}
+            aria-label={`Search: ${query}`}
+          >
+            “{query.trim()}”
+          </button>
+          <Button variant="ghost" size="icon-sm" className="rounded-full" aria-label="Stop showing matches" onClick={() => setActive(-1)}>
+            <X />
+          </Button>
+        </div>
+      )}
       <MarksPanel
         open={panel}
         onOpenChange={setPanel}

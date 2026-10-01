@@ -26,8 +26,14 @@ export const highlightName = (color: HighlightColor) => `reader-${color}`;
 
 /** EPUB chapters paint highlights with `::highlight()`, so they reflow with the text. */
 export function highlightCss(dark: boolean): string {
-  return SWATCHES.map((s) => `::highlight(${highlightName(s.id)}) { background-color: ${dark ? s.dark : s.light}; }`).join("\n");
+  return [
+    ...SWATCHES.map((s) => `::highlight(${highlightName(s.id)}) { background-color: ${dark ? s.dark : s.light}; }`),
+    `::highlight(${SEARCH_MARK}) { background-color: ${dark ? "rgb(255 150 30 / 0.6)" : "rgb(255 140 0 / 0.5)"}; }`,
+  ].join("\n");
 }
+
+/** The CSS highlight marking the search match being looked at. */
+export const SEARCH_MARK = "reader-search";
 
 /** Where on the screen something is, in viewport pixels. */
 export interface Rect {

@@ -1,7 +1,8 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import ePub, { EpubCFI, type Book, type Contents, type NavItem, type Rendition } from "epubjs";
 import type { Highlight } from "./api";
-import { byAge, highlightCss, highlightName, SWATCHES, type Rect, type TextSelection } from "./highlights";
+import { byAge, highlightCss, highlightName, SEARCH_MARK, SWATCHES, type Rect, type TextSelection } from "./highlights";
+import { excerpt, foldQuery, matches, MAX_HITS, type OnFound, type SearchHit } from "./search";
 import { epubLabel } from "./format";
 import { GLIDE, isPageTap, type TocEntry, type ViewerHandle, type ViewerProps } from "./viewer";
 import { stripActiveContent } from "./sanitize";
@@ -251,6 +252,68 @@ function paint(contents: Contents, list: Highlight[], dark: boolean) {
  * The highlight under a tap. Each line's box is grown to meet the lines around it, so a tap
  * between the lines of a highlighted passage still counts as on it.
  */
+/** Marks the search match being looked at, in the chapter it's in (and clears it elsewhere). */
+function markFound(contents: Contents, hit: SearchHit | null) {
+  const win = contents.document.defaultView as HighlightWindow | null;
+  const registry = win?.CSS?.highlights;
+  if (!registry || !win?.Highlight) return;
+  registry.delete(SEARCH_MARK);
+  if (!hit || sectionOf(hit.location) !== contents.sectionIndex) return;
+  try {
+    const range = contents.range(hit.location);
+    if (range && !range.collapsed) registry.set(SEARCH_MARK, new win.Highlight(range));
+  } catch {
+    // The match moved with an edit of the book; going to its chapter is the best we can do.
+  }
+}
+
+/** Blocks whose text reads as separate from the next: a match or excerpt doesn't run across them. */
+const BLOCKS = "p, div, h1, h2, h3, h4, h5, h6, li, blockquote, td, th, pre, section, article, figcaption, dt, dd, tr";
+
+/** Searches one chapter's own document for the (folded) query. */
+function searchSection(doc: Document, query: string, cfiBase: string, index: number, spans: Span[]): SearchHit[] {
+  const body = doc.body ?? doc.documentElement;
+  const nodes: Text[] = [];
+  const starts: number[] = [];
+  let text = "";
+  let block: Element | null | undefined;
+  const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode() as Text | null; n; n = walker.nextNode() as Text | null) {
+    const own = n.parentElement?.closest(BLOCKS) ?? null;
+    if (block !== undefined && own !== block && !/\s$/.test(text)) text += " ";
+    block = own;
+    nodes.push(n);
+    starts.push(text.length);
+    text += n.data;
+  }
+  // Which text node a position in `text` falls in, and where in it.
+  const at = (pos: number): [Text, number] => {
+    let lo = 0;
+    let hi = nodes.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid]! <= pos) lo = mid;
+      else hi = mid - 1;
+    }
+    return [nodes[lo]!, Math.min(pos - starts[lo]!, nodes[lo]!.length)];
+  };
+  const hits: SearchHit[] = [];
+  for (const [start, end] of matches(text, query)) {
+    const range = doc.createRange();
+    const [startNode, startOffset] = at(start);
+    const [endNode, endOffset] = at(end - 1);
+    range.setStart(startNode, startOffset);
+    range.setEnd(endNode, Math.min(endOffset + 1, endNode.length));
+    hits.push({
+      location: new EpubCFI(range, cfiBase).toString(),
+      order: index,
+      fraction: spans.length ? toBook(spans, index, start / Math.max(1, text.length)) : 0,
+      excerpt: excerpt(text, start, end),
+    });
+  }
+  return hits;
+}
+
 function hitHighlight(doc: Document, x: number, y: number): Painted | undefined {
   const list = painted.get(doc) ?? [];
   for (let i = list.length - 1; i >= 0; i--) {
@@ -263,7 +326,7 @@ function hitHighlight(doc: Document, x: number, y: number): Painted | undefined 
 }
 
 export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
-  { id, data, initial, resume, layout, css, cssFor, textSize, dark, onMove, onError, onTap, onTextSize, highlights, onSelect, onHighlightTap, onContents },
+  { id, data, initial, resume, layout, css, cssFor, textSize, dark, onMove, onError, onTap, onTextSize, highlights, onSelect, onHighlightTap, onContents, found },
   ref,
 ) {
   const host = useRef<HTMLDivElement>(null);
@@ -298,6 +361,9 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
   tappedMark.current = onHighlightTap;
   const contentsFound = useRef(onContents);
   contentsFound.current = onContents;
+  const foundNow = useRef(found);
+  foundNow.current = found;
+  const bookNow = useRef<Book>(undefined);
   const sizeChanged = useRef(onTextSize);
   sizeChanged.current = onTextSize;
   const size = useRef(textSize);
@@ -323,6 +389,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
     if (!host.current) return;
     const element = host.current;
     const book = ePub(data.slice(0));
+    bookNow.current = book;
     let alive = true;
     book.spine.hooks.content.register((doc: Document) => stripActiveContent(doc));
 
@@ -580,6 +647,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       view.hooks.content.register((contents: Contents) => {
         applyLook(contents.document, look.current);
         paint(contents, marks.current, darkPage.current);
+        markFound(contents, foundNow.current);
         // A selection that collapses (tapped away, highlighted, copied) takes its toolbar with it.
         contents.document.addEventListener("selectionchange", () => {
           if (!selection || selection.range.startContainer.ownerDocument !== contents.document) return;
@@ -744,6 +812,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       if (selection) selected.current(null);
       rendition.current = undefined;
       alive = false;
+      bookNow.current = undefined;
       pending?.destroy();
       active.destroy();
       try {
@@ -760,6 +829,9 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
   useEffect(() => {
     (rendition.current?.getContents() as unknown as Contents[] | undefined)?.forEach((c) => paint(c, highlights, dark));
   }, [highlights, dark]);
+  useEffect(() => {
+    (rendition.current?.getContents() as unknown as Contents[] | undefined)?.forEach((c) => markFound(c, found));
+  }, [found]);
 
   useImperativeHandle(ref, () => {
     const navigate = (save: boolean, go: (view: Rendition) => Promise<void>) => {
@@ -776,6 +848,33 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
         // The reader moved: where it lands is saved, like scrolling by hand.
         inputUntil.current = Date.now() + 1500;
         box.scrollBy({ top: (forward ? 1 : -1) * box.clientHeight * GLIDE, behavior: "smooth" });
+      },
+      // Each chapter is read from the book's archive and cleaned as for display, so the matches'
+      // addresses are the same as in the chapter shown.
+      search: async (query: string, onFound: OnFound, signal: AbortSignal) => {
+        const book = bookNow.current;
+        const folded = foldQuery(query);
+        if (!book || folded.length < 2) return onFound([], 1);
+        const spine = book.spine as unknown as { length: number; get: (i: number) => { href: string; cfiBase: string } | null };
+        let total = 0;
+        for (let i = 0; i < spine.length; i++) {
+          if (signal.aborted) return;
+          const section = spine.get(i);
+          let hits: SearchHit[] = [];
+          if (section) {
+            try {
+              const doc = (await book.load(section.href)) as unknown as Document;
+              if (signal.aborted) return;
+              stripActiveContent(doc);
+              hits = searchSection(doc, folded, section.cfiBase, i, spans.current).slice(0, MAX_HITS - total);
+            } catch {
+              // An unreadable chapter: nothing found in it.
+            }
+          }
+          total += hits.length;
+          onFound(hits, (i + 1) / spine.length);
+          if (total >= MAX_HITS) return onFound([], 1);
+        }
       },
       // Following another device: show where it is, like opening at a synced spot.
       goTo: (location, save = true) =>
