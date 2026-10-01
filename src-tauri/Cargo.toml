@@ -37,6 +37,11 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-deep-link = "2"
 
+# Windows and Linux start a second copy of the app for a deep link (macOS hands it to the
+# running one); this passes it to the copy already running instead.
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+
 [profile.release]
 codegen-units = 1
 lto = true

@@ -281,7 +281,18 @@ async fn check_apk_update() -> Result<Option<updates::Available>> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    let builder = tauri::Builder::default();
+    // First of all plugins: a second launch (a deep link back from the Google sign-in page)
+    // only brings this window forward; the deep-link plugin gets its URL.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }));
+    let builder = builder.plugin(tauri_plugin_opener::init());
     #[cfg(not(target_os = "android"))]
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -323,8 +334,9 @@ pub fn run() {
             );
             tauri::async_runtime::spawn(engine.clone().run());
 
-            // The Google sign-in page sends the browser to org.reader.books://connected; macOS
-            // asks "Open Reader?" and hands the link here. Bring the window back to the front.
+            // The Google sign-in page sends the browser to org.reader.books://connected; the
+            // browser asks "Open Reader?" and the system hands the link here (on Windows, through
+            // the single-instance plugin). Bring the window back to the front.
             #[cfg(not(target_os = "android"))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;

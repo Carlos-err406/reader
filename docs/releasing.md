@@ -16,13 +16,14 @@ Releases are published to GitHub Releases at `Carlos-err406/reader` by `.github/
 The tag run repeats the checks while it builds two packages in parallel, and publishes only if all three pass:
 
 - **macOS**: a universal (Apple Silicon and Intel) `.dmg`, plus a `.app.tar.gz` for the updater that is signed with the updater key.
+- **Windows**: an NSIS installer for x64, `Reader-<version>-windows-x64-setup.exe`, with a `.sig` from the updater key; the installer is also what the updater downloads. It isn't code-signed, so SmartScreen warns on first run. Installing for the current user needs no administrator rights, and WebView2 is downloaded if it's missing.
 - **Android**: a release APK signed with the Reader key. The build fails unless its certificate matches `release/android-certificate.sha256`.
 
 The publish job then writes `latest.json` (the desktop updater manifest) and a `.sha256` for each package. It uploads everything to a **draft** release, downloads the uploads back to verify them byte for byte, and only then publishes the release as latest. If an upload is interrupted, a draft is left behind; rerun the job to finish it. A release that is already published is never replaced, so publish a new version instead.
 
 ## Build caches
 
-A tag run can only read caches saved on `main`, never ones saved by an earlier tag. So `main` saves every cache, and tag runs only read them. Rust builds are cached with `Swatinem/rust-cache`, Gradle with `gradle/actions/setup-gradle` (its `basic` provider, on the GitHub Actions cache), and pnpm by `setup-node`. The macOS release build is the slowest step, so `main` builds it too, unsigned and without the updater bundle, to warm its cache for the next tag. The Android release build can't be warmed the same way, because the Gradle build refuses unsigned release builds.
+A tag run can only read caches saved on `main`, never ones saved by an earlier tag. So `main` saves every cache, and tag runs only read them. Rust builds are cached with `Swatinem/rust-cache`, Gradle with `gradle/actions/setup-gradle` (its `basic` provider, on the GitHub Actions cache), and pnpm by `setup-node`. The macOS and Windows release builds are the slowest steps, so `main` builds them too, unsigned and without the updater bundles, to warm their caches for the next tag. The Android release build can't be warmed the same way, because the Gradle build refuses unsigned release builds.
 
 ## How installed copies update
 
