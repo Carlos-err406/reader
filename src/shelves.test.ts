@@ -14,6 +14,7 @@ const book = (patch: Partial<Book>): Book => ({
   cover: null,
   favorite: false,
   finishedAt: null,
+  customCover: null,
   ...patch,
 });
 const read = (fraction: number, updatedAt: number) => ({ location: "x", label: "x", fraction, updatedAt });

@@ -61,7 +61,9 @@ import { CollectionsSheet } from "./CollectionsSheet";
 import { NameSheet } from "@/components/NameSheet";
 import { Panel, useBackCloses } from "@/components/Panel";
 import { readMetadata } from "./metadata";
-import { cachedCover, loadCover, makeCover } from "./covers";
+import { makeCover } from "./covers";
+import { BadgedCover } from "./BookCover";
+import { EditDetails } from "./EditDetails";
 import { SyncPanel } from "./SyncPanel";
 import { DisplaySheet } from "./DisplaySheet";
 import { UpdateBanner } from "./UpdateBanner";
@@ -76,37 +78,6 @@ interface Props {
   onStatus: (status: Status) => void;
   onOpen: (book: Book, at?: string) => void;
   onChanged: () => void;
-}
-
-const hue = (id: string) => parseInt(id.slice(0, 6), 16) % 360;
-
-/** The book's own cover once rendered; until then (or without one) a coloured title card. */
-function Cover({ book, large = false }: { book: Book; large?: boolean }) {
-  const [url, setUrl] = useState(() => cachedCover(book.id));
-  useEffect(() => {
-    let live = true;
-    if (book.cover === true) void loadCover(book.id).then((u) => live && setUrl(u));
-    // Rendered here the first time: books imported elsewhere arrive without one.
-    else if (book.cover === null && book.available) void makeCover(book).then((u) => live && setUrl(u));
-    return () => {
-      live = false;
-    };
-  }, [book.id, book.cover, book.available]);
-
-  const frame = cn(
-    "shrink-0 overflow-hidden rounded-[3px_6px_6px_3px] shadow-[0_1px_4px_rgba(0,0,0,0.25)]",
-    large ? "h-[150px] w-[100px]" : "h-[108px] w-[72px]",
-  );
-  if (url) return <img src={url} alt="" className={cn(frame, "object-cover")} />;
-  return (
-    <div
-      className={cn(frame, "flex flex-col justify-between p-2 text-white shadow-[inset_4px_0_0_rgba(0,0,0,0.18),0_1px_4px_rgba(0,0,0,0.25)]")}
-      style={{ background: `hsl(${hue(book.id)} 35% 38%)` }}
-    >
-      <span className="line-clamp-5 font-serif text-[0.65rem] leading-tight">{book.title}</span>
-      <em className="text-[0.55rem] tracking-widest not-italic opacity-80">{book.format.toUpperCase()}</em>
-    </div>
-  );
 }
 
 export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
@@ -145,6 +116,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
   const [filing, setFiling] = useState<Book[]>([]);
   // Phones: the book whose action sheet is open.
   const [acting, setActing] = useState<Book>();
+  const [editing, setEditing] = useState<Book>();
   const pointer = useMedia("(pointer: fine)");
   // Selecting books for one action on all of them; null when not selecting.
   const [selected, setSelected] = useState<Set<string> | null>(null);
@@ -180,6 +152,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
     onSelect: () => setSelected(new Set([book.id])),
     onSheet: wide ? undefined : () => setActing(book),
     onCollections: () => setFiling([book]),
+    onEdit: () => setEditing(book),
     onFavorite: (on) => void mark(api.setFavorite(book.id, on)),
     onFinished: (on) => void mark(api.setFinished(book.id, on)),
     onRemove: () => setRemoving(book),
@@ -704,6 +677,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
                 </>
               )}
             </Panel>
+            <EditDetails book={editing} onClose={() => setEditing(undefined)} onSaved={onChanged} />
             <CollectionsSheet books={filing} onClose={() => setFiling([])} collections={collections ?? []} onChanged={loadCollections} />
             <NameSheet
               open={!!naming}
@@ -957,20 +931,6 @@ function SelectMark({ on }: { on: boolean }) {
   );
 }
 
-/** The cover, with a star on favorites. */
-function BadgedCover({ book, large }: { book: Book; large?: boolean }) {
-  return (
-    <span className="relative block shrink-0 self-start">
-      <Cover book={book} large={large} />
-      {book.favorite && (
-        <span className="absolute -top-1.5 -right-1.5 grid size-6 place-items-center rounded-full bg-card shadow-sm">
-          <Star className="size-3.5 fill-amber-400 text-amber-500" aria-label="Favorite" />
-        </span>
-      )}
-    </span>
-  );
-}
-
 function SectionIcon({ section }: { section: Section }) {
   const Icon = { all: Library_, reading: BookOpen, favorites: Star, finished: CircleCheck, unread: BookDashed }[section];
   return <Icon className="size-4 text-muted-foreground" />;
@@ -1052,6 +1012,7 @@ function ContinueCard({ book, tags, onOpen, actions, selection, onToggle, contex
 interface BookActions {
   onOpen: () => void;
   onCollections: () => void;
+  onEdit: () => void;
   onFavorite: (on: boolean) => void;
   onFinished: (on: boolean) => void;
   /** Starts selecting books, with this one. */
@@ -1080,6 +1041,7 @@ function bookActions(book: Book, a: BookActions, withOpen: boolean): Action[] {
       run: () => a.onFavorite(!book.favorite),
     },
     { id: "collections", icon: <Tag />, label: "Collections…", run: a.onCollections },
+    { id: "edit", icon: <Pencil />, label: "Edit details…", run: a.onEdit },
     {
       id: "finished",
       icon: book.finishedAt ? <RotateCcw /> : <CircleCheck />,

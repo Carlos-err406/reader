@@ -25,6 +25,8 @@ export interface Book {
   favorite: boolean;
   /** When it was read to the end or marked as finished (epoch ms). */
   finishedAt: number | null;
+  /** When a cover was chosen for it, replacing the one drawn from the file (epoch ms). */
+  customCover: number | null;
 }
 
 export interface Bookmark {
@@ -85,7 +87,7 @@ export interface Status {
 }
 
 export interface Changed {
-  kind: "book" | "progress" | "bookmark" | "highlight" | "favorite" | "finished" | "collection" | "member";
+  kind: "book" | "progress" | "bookmark" | "highlight" | "favorite" | "finished" | "collection" | "member" | "cover";
   id: string;
 }
 
@@ -106,6 +108,9 @@ export const api = {
   /** An empty image records that the book has no cover. */
   saveCover: (id: string, image: Uint8Array) => invoke<void>("save_cover", image, { headers: { "x-book-id": id } }),
   readCover: (id: string) => invoke<ArrayBuffer>("read_cover", { id }),
+  /** Chooses a cover for a book; an empty image goes back to the book's own. */
+  setBookCover: (id: string, image: Uint8Array) => invoke<void>("set_book_cover", image, { headers: { "x-book-id": id } }),
+  editBook: (bookId: string, details: { title: string; author: string }) => invoke<void>("edit_book", { bookId, ...details }),
   progress: (bookId: string) => invoke<Progress | null>("get_progress", { bookId }),
   setProgress: (bookId: string, p: Position) => invoke<void>("set_progress", { bookId, ...p }),
   setFavorite: (bookId: string, on: boolean) => invoke<void>("set_favorite", { bookId, on }),

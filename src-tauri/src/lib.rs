@@ -90,12 +90,30 @@ async fn save_cover(request: Request<'_>, state: State<'_, AppState>) -> Result<
     library::set_cover(&state.store, book, image)
 }
 
+/// The chosen cover if there is one, else the one this device drew from the book.
 #[tauri::command]
 async fn read_cover(id: String, state: State<'_, AppState>) -> Result<Response> {
-    match state.store.cover(&id)? {
+    match state.store.custom_cover(&id)?.or(state.store.cover(&id)?) {
         Some(image) => Ok(Response::new(image)),
         None => bail!("No cover"),
     }
+}
+
+/// Chooses a cover for a book from the raw image body; an empty body goes back to the book's own.
+#[tauri::command]
+async fn set_book_cover(request: Request<'_>, state: State<'_, AppState>) -> Result<()> {
+    let InvokeBody::Raw(image) = request.body() else { bail!("Expected the cover image") };
+    let book = request.headers().get("x-book-id").and_then(|v| v.to_str().ok()).unwrap_or_default();
+    library::set_custom_cover(&state.store, book, (!image.is_empty()).then_some(image.as_slice()))?;
+    state.sync.local_changed();
+    Ok(())
+}
+
+#[tauri::command]
+fn edit_book(book_id: String, title: String, author: String, state: State<'_, AppState>) -> Result<()> {
+    library::set_details(&state.store, &book_id, &title, &author)?;
+    state.sync.local_changed();
+    Ok(())
 }
 
 #[tauri::command]
@@ -366,6 +384,8 @@ pub fn run() {
             remove_bookmark,
             set_favorite,
             set_finished,
+            set_book_cover,
+            edit_book,
             list_collections,
             create_collection,
             rename_collection,

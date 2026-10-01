@@ -24,8 +24,11 @@ Tokens never enter the webview. The UI never sees Drive.
 | `finished` | book id                   | at (when it was finished)                     |
 | `collection` | random UUID             | name, createdAt                               |
 | `member`   | `<collection id>:<book id>` | at (when the book was added)                |
+| `cover`    | book id                   | image (base64 JPEG or PNG, at most 256 KB), at |
 
 A highlight's `location` is an EPUB CFI range, or for PDFs the first page, a colon and JSON rectangles `[[page, x, y, width, height], …]`. `color` is one of yellow, green, blue, pink or purple. Highlighting the same passage again recolours it.
+
+Covers drawn from a book's file are a local cache on each device (the `covers` table) and never sync. A cover the reader chooses does, inside its `cover` record, so it's kept small: the app scales it to fit 480×720 and saves it as a JPEG of at most 200 KB. A book's title and author live in its `book` record; editing them stamps a new one, and re-importing the same file keeps them.
 
 A book's place in a collection is its own `member` record, so adding books to a collection on two devices at once loses neither. Deleting a collection tombstones it and its members; the books stay. Favorites and finished are separate records, so starring a book on one device while finishing it on another can't overwrite either. Unstarring, or marking a book not finished, tombstones the record. Saving a position at the end of a book (a PDF's last page, or 99% of an EPUB) adds a `finished` record in the same transaction, unless one exists.
 

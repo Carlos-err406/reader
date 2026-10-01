@@ -2,8 +2,8 @@
 //! Every method is synchronous, so no transaction ever spans a network await.
 use crate::error::{bail, Result};
 use crate::sync::model::{
-    canonical, parse_member_id, validate_record, BookValue, BookmarkValue, CollectionValue, HighlightValue, Kind,
-    ProgressValue, Record, Revision,
+    canonical, cover_image, parse_member_id, validate_record, BookValue, BookmarkValue, CollectionValue, CoverValue,
+    HighlightValue, Kind, ProgressValue, Record, Revision,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
@@ -46,6 +46,8 @@ pub struct Book {
     pub favorite: bool,
     /// When it was read to the end or marked as finished.
     pub finished_at: Option<i64>,
+    /// When a cover was chosen for it (replacing the one drawn from the file), if one was.
+    pub custom_cover: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -294,7 +296,8 @@ impl Store {
             "SELECT b.id, b.value, EXISTS(SELECT 1 FROM blobs WHERE sha256=b.id), p.value,
                     (SELECT length(data) > 0 FROM covers WHERE book=b.id),
                     EXISTS(SELECT 1 FROM records WHERE kind='favorite' AND id=b.id AND value IS NOT NULL),
-                    (SELECT json_extract(value,'$.at') FROM records WHERE kind='finished' AND id=b.id AND value IS NOT NULL)
+                    (SELECT json_extract(value,'$.at') FROM records WHERE kind='finished' AND id=b.id AND value IS NOT NULL),
+                    (SELECT json_extract(value,'$.at') FROM records WHERE kind='cover' AND id=b.id AND value IS NOT NULL)
              FROM records b LEFT JOIN records p ON p.kind='progress' AND p.id=b.id
              WHERE b.kind='book' AND b.value IS NOT NULL",
         )?;
@@ -308,20 +311,23 @@ impl Store {
                     r.get::<_, Option<bool>>(4)?,
                     r.get::<_, bool>(5)?,
                     r.get::<_, Option<i64>>(6)?,
+                    r.get::<_, Option<i64>>(7)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut books = rows
             .into_iter()
-            .map(|(id, value, available, progress, cover, favorite, finished_at)| {
+            .map(|(id, value, available, progress, cover, favorite, finished_at, custom_cover)| {
                 Ok(Book {
                     id,
                     value: serde_json::from_str(&value)?,
                     available,
                     progress: progress.map(|p| serde_json::from_str(&p)).transpose()?,
-                    cover,
+                    // A chosen cover counts as the book having one, on every device.
+                    cover: if custom_cover.is_some() { Some(true) } else { cover },
                     favorite,
                     finished_at,
+                    custom_cover,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -466,6 +472,14 @@ impl Store {
             params![book, image],
         )?;
         Ok(())
+    }
+
+    /// The cover chosen for a book, if one was.
+    pub fn custom_cover(&self, book: &str) -> Result<Option<Vec<u8>>> {
+        match self.record(Kind::Cover, book)?.and_then(|r| r.value) {
+            Some(value) => Ok(cover_image(&serde_json::from_value::<CoverValue>(value)?)),
+            None => Ok(None),
+        }
     }
 
     pub fn cover(&self, book: &str) -> Result<Option<Vec<u8>>> {

@@ -57,6 +57,8 @@ pub enum Kind {
     Collection,
     /// A book in a collection; the id is `<collection id>:<book id>`.
     Member,
+    /// A cover chosen for a book, replacing the one drawn from its file. The id is the book's.
+    Cover,
 }
 
 impl Kind {
@@ -70,11 +72,12 @@ impl Kind {
             Kind::Finished => "finished",
             Kind::Collection => "collection",
             Kind::Member => "member",
+            Kind::Cover => "cover",
         }
     }
 
     /// Every kind this version understands.
-    pub const ALL: [Kind; 8] = [
+    pub const ALL: [Kind; 9] = [
         Kind::Book,
         Kind::Progress,
         Kind::Bookmark,
@@ -83,6 +86,7 @@ impl Kind {
         Kind::Finished,
         Kind::Collection,
         Kind::Member,
+        Kind::Cover,
     ];
 
     pub fn parse(value: &str) -> Result<Self> {
@@ -189,6 +193,24 @@ pub struct CollectionValue {
 
 pub const MAX_COLLECTION_NAME: usize = 80;
 
+/// A chosen cover: a small JPEG or PNG, carried in the record itself (as base64), so it syncs
+/// with everything else. Kept small so a library of them doesn't swell the checkpoints.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CoverValue {
+    pub image: String,
+    pub at: i64,
+}
+
+pub const MAX_COVER_IMAGE: usize = 256 * 1024;
+
+pub fn cover_image(value: &CoverValue) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(&value.image).ok()?;
+    let image = bytes.starts_with(b"\xff\xd8\xff") || bytes.starts_with(b"\x89PNG\r\n\x1a\n");
+    (image && bytes.len() <= MAX_COVER_IMAGE).then_some(bytes)
+}
+
 /// A member record's id: the collection's and the book's, so each membership syncs on its own.
 pub fn member_id(collection: &str, book: &str) -> String {
     format!("{collection}:{book}")
@@ -289,7 +311,7 @@ pub fn validate_record(record: &Record) -> Result<()> {
     let r = &record.revision;
     check(time(r.time) && r.counter >= 0 && text(&r.actor, 200))?;
     match record.kind {
-        Kind::Book | Kind::Progress | Kind::Favorite | Kind::Finished => check(is_sha256(&record.id))?,
+        Kind::Book | Kind::Progress | Kind::Favorite | Kind::Finished | Kind::Cover => check(is_sha256(&record.id))?,
         Kind::Bookmark | Kind::Highlight | Kind::Collection => check(is_uuid(&record.id))?,
         Kind::Member => check(parse_member_id(&record.id).is_some())?,
     }
@@ -303,6 +325,10 @@ pub fn validate_record(record: &Record) -> Result<()> {
         Kind::Collection => {
             let collection: CollectionValue = serde_json::from_value(value).map_err(|_| invalid())?;
             check(text(&collection.name, MAX_COLLECTION_NAME) && time(collection.created_at))
+        }
+        Kind::Cover => {
+            let cover: CoverValue = serde_json::from_value(value).map_err(|_| invalid())?;
+            check(time(cover.at) && cover_image(&cover).is_some())
         }
         Kind::Favorite | Kind::Finished | Kind::Member => {
             let marked: MarkedValue = serde_json::from_value(value).map_err(|_| invalid())?;

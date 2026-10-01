@@ -3,8 +3,8 @@ use crate::error::{bail, Result};
 use crate::store::{now_ms, Book, Bookmark, Collection, Highlight, Store};
 use crate::sync::model::{
     is_sha256, validate_book, validate_bookmark, validate_highlight, validate_progress, BookValue,
-    BookmarkValue, Color, CollectionValue, Format, HighlightValue, Kind, MarkedValue, ProgressValue, MAX_BOOK_BYTES,
-    MAX_COLLECTION_NAME, MAX_HIGHLIGHT_TEXT, is_uuid, member_id,
+    BookmarkValue, Color, CollectionValue, CoverValue, Format, HighlightValue, Kind, MarkedValue, ProgressValue,
+    MAX_BOOK_BYTES, MAX_COLLECTION_NAME, MAX_COVER_IMAGE, MAX_HIGHLIGHT_TEXT, is_uuid, member_id,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -50,8 +50,14 @@ pub fn import(store: &Store, bytes: &[u8], meta: ImportMeta) -> Result<Book> {
         t => t,
     };
     let author = meta.author.map(|a| clip(&a, 500)).filter(|a| !a.is_empty());
-    // Re-importing keeps the original added time, and revives a deleted book.
-    let added_at = store.book(&id)?.map_or_else(now_ms, |b| b.added_at);
+    // Re-importing keeps the original added time and any title or author edited since, and
+    // revives a deleted book.
+    let existing = store.book(&id)?;
+    let added_at = existing.as_ref().map_or_else(now_ms, |b| b.added_at);
+    let (title, author) = match existing {
+        Some(b) => (b.title, b.author),
+        None => (title, author),
+    };
     let value = BookValue { title, author, format, size: bytes.len() as u64, added_at };
     validate_book(&value)?;
     store.put_blob(&id, bytes)?;
@@ -60,7 +66,8 @@ pub fn import(store: &Store, bytes: &[u8], meta: ImportMeta) -> Result<Book> {
     // The webview renders the cover right after importing.
     let favorite = store.record(Kind::Favorite, &id)?.is_some_and(|r| r.value.is_some());
     let finished_at = finished_at(store, &id)?;
-    Ok(Book { id, value, available: true, progress, cover: None, favorite, finished_at })
+    let custom_cover = store.custom_cover(&id)?.map(|_| now_ms());
+    Ok(Book { id, value, available: true, progress, cover: custom_cover.map(|_| true), favorite, finished_at, custom_cover })
 }
 
 fn require_book(store: &Store, id: &str) -> Result<BookValue> {
@@ -90,7 +97,7 @@ pub fn remove(store: &Store, id: &str) -> Result<()> {
     let mut edits = vec![(Kind::Book, id.to_owned(), None)];
     edits.extend(store.bookmarks(id)?.into_iter().map(|b| (Kind::Bookmark, b.id, None)));
     edits.extend(store.highlights(Some(id))?.into_iter().map(|h| (Kind::Highlight, h.id, None)));
-    for kind in [Kind::Favorite, Kind::Finished] {
+    for kind in [Kind::Favorite, Kind::Finished, Kind::Cover] {
         if store.record(kind, id)?.is_some_and(|r| r.value.is_some()) {
             edits.push((kind, id.to_owned(), None));
         }
@@ -112,6 +119,43 @@ fn at_the_end(format: Format, fraction: f64) -> bool {
         Format::Pdf => fraction >= 0.9999,
         Format::Epub => fraction >= 0.99,
     }
+}
+
+/// Corrects a book's title or author. An empty author clears it.
+pub fn set_details(store: &Store, book: &str, title: &str, author: &str) -> Result<BookValue> {
+    let mut value = require_book(store, book)?;
+    let title = clip(title, 500);
+    if title.is_empty() {
+        bail!("A book needs a title");
+    }
+    let author = Some(clip(author, 500)).filter(|a| !a.is_empty());
+    if value.title != title || value.author != author {
+        value.title = title;
+        value.author = author;
+        validate_book(&value)?;
+        store.stamp(vec![(Kind::Book, book.to_owned(), Some(serde_json::to_value(&value)?))])?;
+    }
+    Ok(value)
+}
+
+/// Chooses a cover for a book (a small JPEG or PNG), or with `None` goes back to the one drawn
+/// from its file.
+pub fn set_custom_cover(store: &Store, book: &str, image: Option<&[u8]>) -> Result<()> {
+    use base64::Engine;
+    require_book(store, book)?;
+    let value = match image {
+        Some(image) => {
+            let image_like = image.starts_with(b"\xff\xd8\xff") || image.starts_with(b"\x89PNG\r\n\x1a\n");
+            if !image_like || image.len() > MAX_COVER_IMAGE {
+                bail!("Covers must be a JPEG or PNG under {} KB", MAX_COVER_IMAGE / 1024);
+            }
+            let cover = CoverValue { image: base64::engine::general_purpose::STANDARD.encode(image), at: now_ms() };
+            Some(serde_json::to_value(cover)?)
+        }
+        None if store.record(Kind::Cover, book)?.is_none_or(|r| r.value.is_none()) => return Ok(()),
+        None => None,
+    };
+    store.stamp(vec![(Kind::Cover, book.to_owned(), value)])
 }
 
 pub fn set_progress(store: &Store, book: &str, location: String, label: String, fraction: f64) -> Result<Option<ProgressValue>> {
@@ -441,6 +485,28 @@ mod tests {
         assert_eq!(store.books().unwrap().len(), 1);
         assert!(set_member(&store, &sci.id, &book.id, true).is_err());
         assert!(store.members().unwrap().iter().all(|(c, _)| *c == fav.id));
+    }
+
+    #[test]
+    fn details_and_chosen_covers_are_edited_and_survive_reimporting() {
+        let store = Store::memory().unwrap();
+        let book = import(&store, &epub(), ImportMeta { title: "Wrong Title".into(), author: None }).unwrap();
+        set_details(&store, &book.id, "  Dune ", " Frank Herbert ").unwrap();
+        assert!(set_details(&store, &book.id, "   ", "x").is_err());
+        let again = import(&store, &epub(), ImportMeta { title: "Wrong Title".into(), author: Some("?".into()) }).unwrap();
+        assert_eq!((again.value.title.as_str(), again.value.author.as_deref()), ("Dune", Some("Frank Herbert")));
+        set_details(&store, &book.id, "Dune", "").unwrap();
+        assert_eq!(store.book(&book.id).unwrap().unwrap().author, None);
+
+        let jpeg = b"\xff\xd8\xff\xe0 a tiny jpeg".to_vec();
+        assert!(set_custom_cover(&store, &book.id, Some(b"not an image")).is_err());
+        set_custom_cover(&store, &book.id, Some(&jpeg)).unwrap();
+        assert_eq!(store.custom_cover(&book.id).unwrap(), Some(jpeg));
+        let listed = store.books().unwrap().remove(0);
+        assert!(listed.custom_cover.is_some() && listed.cover == Some(true));
+        set_custom_cover(&store, &book.id, None).unwrap();
+        assert_eq!(store.custom_cover(&book.id).unwrap(), None);
+        assert!(store.books().unwrap()[0].custom_cover.is_none());
     }
 
     #[test]
