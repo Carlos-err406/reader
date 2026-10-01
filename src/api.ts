@@ -140,6 +140,10 @@ export const api = {
   openLink: (url: string) => invoke<void>("open_link", { url }),
   /** Android: hide the system bars while reading. A no-op on desktop. */
   setImmersive: (on: boolean) => invoke<void>("set_immersive", { on }),
+  /** Android: keep the screen from sleeping. A no-op on desktop. */
+  keepAwake: (on: boolean) => invoke<void>("keep_awake", { on }),
+  /** Android: while on, the volume buttons send page turns to `keys` instead of changing the volume. */
+  volumeKeys: (on: boolean, keys: Channel<{ turn: "next" | "previous" }>) => invoke<void>("volume_keys", { on, keys }),
 };
 
 export const onChanged = (handler: (changed: Changed[]) => void): Promise<UnlistenFn> =>

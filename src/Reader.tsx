@@ -33,6 +33,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Channel } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -45,6 +46,9 @@ interface Props {
 
 // Android hides its system bars instead; the desktop window can go fullscreen.
 const desktop = !/android/i.test(navigator.userAgent);
+
+/** How long the screen stays on without the reader touching the book. */
+const AWAKE_FOR = 10 * 60 * 1000;
 
 async function setFullscreen(on: boolean) {
   try {
@@ -170,6 +174,48 @@ export function Reader({ book, at, onClose }: Props) {
     return () => void unlisten.then((f) => f());
   }, [book.id, onClose]);
 
+  // Android: the screen stays on while reading, until the book goes untouched for a while (a
+  // phone left on the table still sleeps). Touches, keys, scrolling and page turns count.
+  const stir = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (desktop || !display.keepAwake) return;
+    let on = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const wake = () => {
+      if (!on) {
+        on = true;
+        void api.keepAwake(true).catch(() => {});
+      }
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        on = false;
+        void api.keepAwake(false).catch(() => {});
+      }, AWAKE_FOR);
+    };
+    stir.current = wake;
+    wake();
+    const events = ["pointerdown", "keydown", "wheel"] as const;
+    events.forEach((type) => window.addEventListener(type, wake, { capture: true, passive: true }));
+    return () => {
+      events.forEach((type) => window.removeEventListener(type, wake, { capture: true }));
+      clearTimeout(timer);
+      stir.current = () => {};
+      void api.keepAwake(false).catch(() => {});
+    };
+  }, [display.keepAwake]);
+
+  // Android: the volume buttons turn pages, down forward and up back, while the book is open.
+  useEffect(() => {
+    if (desktop || !display.volumeKeys) return;
+    const keys = new Channel<{ turn: "next" | "previous" }>((e) => {
+      stir.current();
+      if (e.turn === "next") viewer.current?.next();
+      else viewer.current?.prev();
+    });
+    void api.volumeKeys(true, keys).catch(() => {});
+    return () => void api.volumeKeys(false, keys).catch(() => {});
+  }, [display.volumeKeys]);
+
   // Android's status and navigation bars follow the reader's own controls.
   useEffect(() => {
     void api.setImmersive(!chrome).catch(() => {});
@@ -220,6 +266,7 @@ export function Reader({ book, at, onClose }: Props) {
   const onMove = useCallback(
     (p: Position, moved: boolean) => {
       setPosition(p);
+      stir.current();
       const opening = !opened.current;
       opened.current = true;
       // Opening at a highlight from the library is the reader going there.
@@ -240,6 +287,7 @@ export function Reader({ book, at, onClose }: Props) {
 
   const onError = useCallback((e: unknown) => setError(message(e)), []);
   const onTap = useCallback(() => {
+    stir.current();
     if (floating.current) {
       setMenu(null);
       return;

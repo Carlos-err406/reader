@@ -382,6 +382,8 @@ pub fn run() {
             google_disconnect,
             app_foreground,
             system_ui::set_immersive,
+            system_ui::keep_awake,
+            system_ui::volume_keys,
             check_apk_update,
             system_ui::install_update,
             open_link,

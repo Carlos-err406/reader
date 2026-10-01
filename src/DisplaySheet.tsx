@@ -23,6 +23,40 @@ function Setting({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
+const android = /android/i.test(navigator.userAgent);
+
+/** An on/off setting with a sentence explaining it. */
+function Switch({ label, detail, on, onChange }: { label: string; detail: string; on: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      onClick={() => onChange(!on)}
+      className="flex w-full items-center gap-3 rounded-lg py-1 text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
+    >
+      <span className="grid min-w-0 flex-1 gap-0.5">
+        <span className="text-sm font-medium">{label}</span>
+        <span className="text-xs text-muted-foreground">{detail}</span>
+      </span>
+      <span
+        className={cn(
+          "relative h-6 w-10 shrink-0 rounded-full transition-colors",
+          on ? "bg-primary" : "bg-muted-foreground/30",
+        )}
+        aria-hidden="true"
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 size-5 rounded-full bg-background shadow transition-[left]",
+            on ? "left-[1.125rem]" : "left-0.5",
+          )}
+        />
+      </span>
+    </button>
+  );
+}
+
 function Choice<T extends string>({ value, options, onChange, label }: {
   value: T;
   options: [T, string][];
@@ -182,6 +216,25 @@ export function DisplaySheet({ open, onOpenChange, reading }: Props) {
             />
           </Setting>
         </>
+      )}
+
+      {android && (
+        <Setting title="While reading">
+          <div className="grid gap-3">
+            <Switch
+              label="Volume buttons turn pages"
+              detail="Volume down goes forward, volume up goes back."
+              on={display.volumeKeys}
+              onChange={(volumeKeys) => setDisplay({ volumeKeys })}
+            />
+            <Switch
+              label="Keep the screen on"
+              detail="Until 10 minutes go by without you touching the book."
+              on={display.keepAwake}
+              onChange={(keepAwake) => setDisplay({ keepAwake })}
+            />
+          </div>
+        </Setting>
       )}
     </Panel>
   );

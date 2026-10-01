@@ -84,3 +84,43 @@ pub async fn set_immersive(on: bool, app: tauri::AppHandle) -> crate::error::Res
     let _ = (on, app);
     Ok(())
 }
+
+/// Android: keeps the screen from sleeping while on. A no-op on desktop.
+#[tauri::command]
+pub async fn keep_awake(on: bool, app: tauri::AppHandle) -> crate::error::Result<()> {
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager;
+        let handle = app.state::<android::Handle>().0.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            handle.run_mobile_plugin::<serde_json::Value>("keepAwake", serde_json::json!({ "on": on }))
+        })
+        .await
+        .map_err(|e| crate::error::Error::new(e.to_string()))?
+        .map_err(|e| crate::error::Error::new(e.to_string()))?;
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = (on, app);
+    Ok(())
+}
+
+/// Android: while on, the volume buttons send "previous" or "next" to `keys` instead of changing
+/// the volume. A no-op on desktop.
+#[tauri::command]
+pub async fn volume_keys(on: bool, keys: tauri::ipc::Channel<serde_json::Value>, app: tauri::AppHandle) -> crate::error::Result<()> {
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager;
+        let handle = app.state::<android::Handle>().0.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            // The channel serialises to its id, which the Kotlin side sends to.
+            handle.run_mobile_plugin::<serde_json::Value>("volumeKeys", serde_json::json!({ "on": on, "keys": keys }))
+        })
+        .await
+        .map_err(|e| crate::error::Error::new(e.to_string()))?
+        .map_err(|e| crate::error::Error::new(e.to_string()))?;
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = (on, keys, app);
+    Ok(())
+}

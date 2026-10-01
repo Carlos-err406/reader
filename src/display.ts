@@ -90,6 +90,10 @@ export interface Display {
   layout: Layout;
   spacing: Spacing;
   align: Align;
+  /** Android: the volume buttons turn pages while reading. */
+  volumeKeys: boolean;
+  /** Android: the screen stays on while reading. */
+  keepAwake: boolean;
 }
 
 export const DEFAULT_DISPLAY: Display = {
@@ -100,6 +104,8 @@ export const DEFAULT_DISPLAY: Display = {
   layout: "scroll",
   spacing: "1.5",
   align: "book",
+  volumeKeys: true,
+  keepAwake: true,
 };
 
 const KEY = "reader:display";
@@ -129,6 +135,8 @@ export function normalize(d: Display): Display {
     layout: d.layout === "pages" ? "pages" : "scroll",
     spacing: SPACINGS.includes(d.spacing) ? d.spacing : DEFAULT_DISPLAY.spacing,
     align: ALIGNS.includes(d.align) ? d.align : DEFAULT_DISPLAY.align,
+    volumeKeys: typeof d.volumeKeys === "boolean" ? d.volumeKeys : DEFAULT_DISPLAY.volumeKeys,
+    keepAwake: typeof d.keepAwake === "boolean" ? d.keepAwake : DEFAULT_DISPLAY.keepAwake,
   };
 }
 

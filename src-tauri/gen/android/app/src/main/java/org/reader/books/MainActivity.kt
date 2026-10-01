@@ -1,6 +1,7 @@
 package org.reader.books
 
 import android.os.Bundle
+import android.view.KeyEvent
 import android.view.View
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
@@ -21,4 +22,8 @@ class MainActivity : TauriActivity() {
       insets
     }
   }
+
+  // The volume buttons never reach the page, so they're caught here (see SystemUiPlugin).
+  override fun dispatchKeyEvent(event: KeyEvent): Boolean =
+    SystemUiPlugin.onKey(event) || super.dispatchKeyEvent(event)
 }
