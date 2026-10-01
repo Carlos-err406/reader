@@ -151,11 +151,16 @@ function paint(contents: Contents, list: Highlight[], dark: boolean) {
   }
 }
 
+/**
+ * The highlight under a tap. Each line's box is grown to meet the lines around it, so a tap
+ * between the lines of a highlighted passage still counts as on it.
+ */
 function hitHighlight(doc: Document, x: number, y: number): Painted | undefined {
   const list = painted.get(doc) ?? [];
   for (let i = list.length - 1; i >= 0; i--) {
     for (const r of list[i]!.range.getClientRects()) {
-      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return list[i];
+      const pad = Math.max(4, r.height * 0.4);
+      if (x >= r.left - 4 && x <= r.right + 4 && y >= r.top - pad && y <= r.bottom + pad) return list[i];
     }
   }
   return undefined;

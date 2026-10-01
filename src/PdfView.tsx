@@ -27,7 +27,9 @@ interface Mark {
   box: [number, number, number, number];
 }
 
-const inside = ([x, y, w, h]: Mark["box"], px: number, py: number) => px >= x && px <= x + w && py >= y && py <= y + h;
+/** Whether a point is on a mark, counting the gap to the lines around it. */
+const inside = ([x, y, w, h]: Mark["box"], px: number, py: number) =>
+  px >= x - 0.005 && px <= x + w + 0.005 && py >= y - h * 0.4 && py <= y + h * 1.4;
 
 /**
  * Renders one page into a canvas `width` CSS pixels wide (or fitted into width×height), with

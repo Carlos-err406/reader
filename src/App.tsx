@@ -43,13 +43,16 @@ export function App() {
 
   // Android's back button walks history, so the reader is a history entry.
   useEffect(() => {
-    const back = () => setOpen(undefined);
+    // Backing out of a panel inside the reader lands on the reader's own entry: stay there.
+    const back = () => setOpen((current) => (history.state?.book ? current : undefined));
     window.addEventListener("popstate", back);
     return () => window.removeEventListener("popstate", back);
   }, []);
 
   const openBook = (book: Book, at?: string) => {
-    history.pushState({ book: book.id }, "");
+    // Opened from a panel (the library's highlights): the book takes the panel's place.
+    if (history.state?.panel) history.replaceState({ book: book.id }, "");
+    else history.pushState({ book: book.id }, "");
     setOpen({ book, at });
   };
   const close = useCallback(() => {
