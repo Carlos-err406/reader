@@ -173,6 +173,10 @@
    book. The Scrubber shows the real position instead. */
 .epub-frame .epub-container {
   scrollbar-width: none;
+  /* epub.js corrects the scroll itself when it inserts an earlier chapter above the reader.
+     Chromium's scroll anchoring (Android's WebView) corrected it too, so reopening a book
+     jumped forward by about a chapter. */
+  overflow-anchor: none;
 }
 .epub-frame .epub-container::-webkit-scrollbar {
   display: none;
