@@ -946,19 +946,29 @@ function ContinueCard({ book, tags, onOpen, actions, selection, onToggle }: Cont
   return (
     <section aria-label="Continue reading" className="mb-6">
       <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Continue reading</h2>
+      {/* The whole card opens the book (or, while selecting, selects it). */}
       <div
         className={cn(
-          "relative flex gap-4 rounded-2xl border bg-card p-4 pr-10",
-          selecting && "cursor-pointer select-none",
+          "relative flex cursor-pointer gap-4 rounded-2xl border bg-card p-4 pr-10 transition-colors outline-none select-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring",
           selection && "border-primary ring-2 ring-primary",
         )}
-        role={selecting ? "button" : undefined}
+        role="button"
+        tabIndex={0}
+        aria-label={selecting ? book.title : `Continue reading ${book.title}`}
         aria-pressed={selecting ? selection : undefined}
-        tabIndex={selecting ? 0 : undefined}
-        onClick={selecting ? onToggle : undefined}
-        onKeyDown={selecting ? (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onToggle()) : undefined}
+        onClick={selecting ? onToggle : onOpen}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+          e.preventDefault();
+          (selecting ? onToggle : onOpen)();
+        }}
       >
-        {!selecting && <BookMenu book={book} actions={actions} />}
+        {!selecting && (
+          // Its menu (and the items in it, rendered elsewhere) mustn't also open the book.
+          <div className="contents" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+            <BookMenu book={book} actions={actions} />
+          </div>
+        )}
         <span className="relative block shrink-0 self-start">
           <BadgedCover book={book} large />
           {selecting && <SelectMark on={!!selection} />}
@@ -983,10 +993,6 @@ function ContinueCard({ book, tags, onOpen, actions, selection, onToggle }: Cont
             </div>
             <span className="text-xs text-muted-foreground tabular-nums">{percent}%</span>
           </div>
-          <Button className={cn("mt-2 self-start rounded-full", selecting && "invisible")} onClick={onOpen} tabIndex={selecting ? -1 : undefined}>
-            <BookOpen />
-            Resume
-          </Button>
         </div>
       </div>
     </section>
