@@ -22,6 +22,9 @@ export interface Book {
   progress: Progress | null;
   /** null until this device has rendered a cover; then whether the book has one. */
   cover: boolean | null;
+  favorite: boolean;
+  /** When it was read to the end or marked as finished (epoch ms). */
+  finishedAt: number | null;
 }
 
 export interface Bookmark {
@@ -74,7 +77,7 @@ export interface Status {
 }
 
 export interface Changed {
-  kind: "book" | "progress" | "bookmark" | "highlight";
+  kind: "book" | "progress" | "bookmark" | "highlight" | "favorite" | "finished";
   id: string;
 }
 
@@ -97,6 +100,8 @@ export const api = {
   readCover: (id: string) => invoke<ArrayBuffer>("read_cover", { id }),
   progress: (bookId: string) => invoke<Progress | null>("get_progress", { bookId }),
   setProgress: (bookId: string, p: Position) => invoke<void>("set_progress", { bookId, ...p }),
+  setFavorite: (bookId: string, on: boolean) => invoke<void>("set_favorite", { bookId, on }),
+  setFinished: (bookId: string, on: boolean) => invoke<void>("set_finished", { bookId, on }),
   bookmarks: (bookId: string) => invoke<Bookmark[]>("list_bookmarks", { bookId }),
   addBookmark: (bookId: string, p: Position) =>
     invoke<Bookmark>("add_bookmark", { bookId, location: p.location, label: p.label }),

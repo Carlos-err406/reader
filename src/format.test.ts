@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Status } from "./api";
-import { ago, countdown, epubLabel, pdfPage, pdfPosition, plural, statusLine, titleFromFileName } from "./format";
+import { ago, countdown, day, epubLabel, pdfPage, pdfPosition, plural, statusLine, titleFromFileName } from "./format";
 
 const status = (patch: Partial<Status>): Status => ({
   enabled: true,
@@ -57,5 +57,15 @@ describe("format", () => {
     expect(countdown(1_000_000 + 90_000, 1_000_000)).toBe("2 min");
     expect(plural(1, "book")).toBe("1 book");
     expect(plural(3, "bookmark")).toBe("3 bookmarks");
+  });
+});
+
+describe("day", () => {
+  const now = new Date(2026, 9, 1, 15).getTime();
+  it("says today and yesterday, then the date", () => {
+    expect(day(new Date(2026, 9, 1, 1).getTime(), now)).toBe("today");
+    expect(day(new Date(2026, 8, 30, 23).getTime(), now)).toBe("yesterday");
+    expect(day(new Date(2026, 8, 28).getTime(), now)).not.toMatch(/2026/);
+    expect(day(new Date(2025, 8, 28).getTime(), now)).toMatch(/2025/);
   });
 });

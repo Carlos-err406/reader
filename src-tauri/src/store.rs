@@ -43,6 +43,9 @@ pub struct Book {
     pub progress: Option<ProgressValue>,
     /// `None` until this device has tried to render a cover; then whether it found one.
     pub cover: Option<bool>,
+    pub favorite: bool,
+    /// When it was read to the end or marked as finished.
+    pub finished_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -279,7 +282,9 @@ impl Store {
         let conn = self.lock();
         let mut statement = conn.prepare(
             "SELECT b.id, b.value, EXISTS(SELECT 1 FROM blobs WHERE sha256=b.id), p.value,
-                    (SELECT length(data) > 0 FROM covers WHERE book=b.id)
+                    (SELECT length(data) > 0 FROM covers WHERE book=b.id),
+                    EXISTS(SELECT 1 FROM records WHERE kind='favorite' AND id=b.id AND value IS NOT NULL),
+                    (SELECT json_extract(value,'$.at') FROM records WHERE kind='finished' AND id=b.id AND value IS NOT NULL)
              FROM records b LEFT JOIN records p ON p.kind='progress' AND p.id=b.id
              WHERE b.kind='book' AND b.value IS NOT NULL",
         )?;
@@ -291,18 +296,22 @@ impl Store {
                     r.get(2)?,
                     r.get::<_, Option<String>>(3)?,
                     r.get::<_, Option<bool>>(4)?,
+                    r.get::<_, bool>(5)?,
+                    r.get::<_, Option<i64>>(6)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut books = rows
             .into_iter()
-            .map(|(id, value, available, progress, cover)| {
+            .map(|(id, value, available, progress, cover, favorite, finished_at)| {
                 Ok(Book {
                     id,
                     value: serde_json::from_str(&value)?,
                     available,
                     progress: progress.map(|p| serde_json::from_str(&p)).transpose()?,
                     cover,
+                    favorite,
+                    finished_at,
                 })
             })
             .collect::<Result<Vec<_>>>()?;

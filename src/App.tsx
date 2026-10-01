@@ -69,8 +69,13 @@ export function App() {
   const close = useCallback(() => {
     if (history.state?.book) history.back();
     else setOpen(undefined);
-    refresh();
-  }, [refresh]);
+  }, []);
+  // Back in the library, however the book was left (the back arrow, Android's back button):
+  // show what reading changed, like progress, favorites and finished books.
+  const reading = !!open;
+  useEffect(() => {
+    if (!reading) refresh();
+  }, [reading, refresh]);
 
   if (open) return <Reader key={open.book.id} book={open.book} at={open.at} onClose={close} />;
   return (

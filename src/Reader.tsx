@@ -27,6 +27,7 @@ import {
   List,
   Maximize2,
   Minimize2,
+  Star,
   Type,
   ZoomIn,
   ZoomOut,
@@ -57,6 +58,7 @@ export function Reader({ book, at, onClose }: Props) {
   const [error, setError] = useState<string>();
   const [position, setPosition] = useState<Position>();
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [favorite, setFavorite] = useState(book.favorite);
   const [highlights, setHighlights] = useState<Highlight[]>([]);
   // Selected text offered for highlighting, or a highlight that was tapped.
   const [selection, setSelection] = useState<TextSelection | null>(null);
@@ -158,6 +160,9 @@ export function Reader({ book, at, onClose }: Props) {
         });
       }
       if (changed.some((c) => c.kind === "bookmark")) void api.bookmarks(book.id).then(setBookmarks);
+      if (changed.some((c) => c.kind === "favorite" && c.id === book.id)) {
+        void api.books().then((books) => setFavorite(!!books.find((b) => b.id === book.id)?.favorite));
+      }
       if (changed.some((c) => c.kind === "highlight")) void api.highlights(book.id).then(setHighlights);
     });
     return () => void unlisten.then((f) => f());
@@ -281,6 +286,16 @@ export function Reader({ book, at, onClose }: Props) {
     );
   const tapped = menu ? highlights.find((h) => h.id === menu.id) : undefined;
 
+  const toggleFavorite = () => {
+    const next = !favorite;
+    setFavorite(next);
+    showBadge(next ? "Added to favorites" : "Removed from favorites");
+    api.setFavorite(book.id, next).catch((e) => {
+      setFavorite(!next);
+      setError(message(e));
+    });
+  };
+
   const marked = bookmarks.find((b) => b.location === position?.location);
   const toggleBookmark = async () => {
     if (!position) return;
@@ -362,6 +377,16 @@ export function Reader({ book, at, onClose }: Props) {
           aria-pressed={!!marked}
         >
           {marked ? <BookmarkCheck className="size-5 fill-current" /> : <BookmarkIcon className="size-5" />}
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-lg"
+          className={cn(favorite && "text-amber-500")}
+          onClick={toggleFavorite}
+          aria-label={favorite ? "Remove from favorites" : "Add to favorites"}
+          aria-pressed={favorite}
+        >
+          <Star className={cn("size-5", favorite && "fill-current")} />
         </Button>
         <Button variant="ghost" size="icon-lg" onClick={() => setShowDisplay(true)} aria-label="Display settings">
           <Type className="size-5" />

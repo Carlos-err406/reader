@@ -41,6 +41,16 @@ export function ago(time: number, now = Date.now(), compact = false): string {
   return new Date(time).toLocaleDateString();
 }
 
+/** A day for labels: "today", "yesterday", "28 Sep", or with the year if it isn't this one. */
+export function day(time: number, now = Date.now()): string {
+  const start = (t: number) => new Date(t).setHours(0, 0, 0, 0);
+  const days = Math.round((start(now) - start(time)) / 86_400_000);
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  const sameYear = new Date(time).getFullYear() === new Date(now).getFullYear();
+  return new Date(time).toLocaleDateString(undefined, { day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }) });
+}
+
 export type Tone = "off" | "ok" | "busy" | "warn" | "error";
 
 /** A short phrase for the header chip, plus the colour of its dot. */
@@ -68,3 +78,6 @@ export function size(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
+
+/** For matching text: ignores case and accents, so "codigo" finds "Código". */
+export const fold = (text: string) => text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();

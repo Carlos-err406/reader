@@ -137,6 +137,22 @@ fn remove_bookmark(id: String, state: State<'_, AppState>) -> Result<()> {
     Ok(())
 }
 
+#[tauri::command]
+fn set_favorite(book_id: String, on: bool, state: State<'_, AppState>) -> Result<()> {
+    if library::set_mark(&state.store, sync::model::Kind::Favorite, &book_id, on)? {
+        state.sync.local_changed();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_finished(book_id: String, on: bool, state: State<'_, AppState>) -> Result<()> {
+    if library::set_mark(&state.store, sync::model::Kind::Finished, &book_id, on)? {
+        state.sync.local_changed();
+    }
+    Ok(())
+}
+
 /// One book's highlights, or (without `book_id`) every book's.
 #[tauri::command]
 fn list_highlights(book_id: Option<String>, state: State<'_, AppState>) -> Result<Vec<Highlight>> {
@@ -302,6 +318,8 @@ pub fn run() {
             list_bookmarks,
             add_bookmark,
             remove_bookmark,
+            set_favorite,
+            set_finished,
             list_highlights,
             add_highlight,
             recolor_highlight,

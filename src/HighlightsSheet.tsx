@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { api, message, onChanged, type Book, type Highlight, type HighlightColor } from "./api";
 import { Panel } from "@/components/Panel";
+import { fold } from "./format";
 import { ColorFilter, HighlightItem, withColor, type ColorChoice } from "./HighlightList";
 
 interface Props {
@@ -11,9 +12,6 @@ interface Props {
   books: Book[];
   onOpen: (book: Book, location: string) => void;
 }
-
-/** Ignores case and accents, so "codigo" finds "Código". */
-const fold = (text: string) => text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
 
 /** Every highlight in the library, searchable, grouped by book. */
 export function HighlightsSheet({ open, onOpenChange, books, onOpen }: Props) {

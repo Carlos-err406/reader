@@ -49,6 +49,10 @@ pub enum Kind {
     Progress,
     Bookmark,
     Highlight,
+    /// A starred book. Unstarring tombstones it.
+    Favorite,
+    /// A book read to the end, or marked as finished. Marking it not finished tombstones it.
+    Finished,
 }
 
 impl Kind {
@@ -58,6 +62,8 @@ impl Kind {
             Kind::Progress => "progress",
             Kind::Bookmark => "bookmark",
             Kind::Highlight => "highlight",
+            Kind::Favorite => "favorite",
+            Kind::Finished => "finished",
         }
     }
 
@@ -67,6 +73,8 @@ impl Kind {
             "progress" => Ok(Kind::Progress),
             "bookmark" => Ok(Kind::Bookmark),
             "highlight" => Ok(Kind::Highlight),
+            "favorite" => Ok(Kind::Favorite),
+            "finished" => Ok(Kind::Finished),
             _ => bail!("Unknown record kind"),
         }
     }
@@ -153,6 +161,13 @@ pub struct HighlightValue {
     pub created_at: i64,
 }
 
+/// When a book was starred or finished. The record's id is the book's.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MarkedValue {
+    pub at: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Checkpoint {
@@ -236,7 +251,7 @@ pub fn validate_record(record: &Record) -> Result<()> {
     let r = &record.revision;
     check(time(r.time) && r.counter >= 0 && text(&r.actor, 200))?;
     match record.kind {
-        Kind::Book | Kind::Progress => check(is_sha256(&record.id))?,
+        Kind::Book | Kind::Progress | Kind::Favorite | Kind::Finished => check(is_sha256(&record.id))?,
         Kind::Bookmark | Kind::Highlight => check(is_uuid(&record.id))?,
     }
     let Some(value) = &record.value else { return Ok(()) };
@@ -246,6 +261,10 @@ pub fn validate_record(record: &Record) -> Result<()> {
         Kind::Progress => validate_progress(&serde_json::from_value(value).map_err(|_| invalid())?),
         Kind::Bookmark => validate_bookmark(&serde_json::from_value(value).map_err(|_| invalid())?),
         Kind::Highlight => validate_highlight(&serde_json::from_value(value).map_err(|_| invalid())?),
+        Kind::Favorite | Kind::Finished => {
+            let marked: MarkedValue = serde_json::from_value(value).map_err(|_| invalid())?;
+            check(time(marked.at))
+        }
     }
 }
 

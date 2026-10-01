@@ -3,7 +3,8 @@ use crate::error::{bail, Result};
 use crate::store::{now_ms, Book, Bookmark, Highlight, Store};
 use crate::sync::model::{
     is_sha256, validate_book, validate_bookmark, validate_highlight, validate_progress, BookValue,
-    BookmarkValue, Color, Format, HighlightValue, Kind, ProgressValue, MAX_BOOK_BYTES, MAX_HIGHLIGHT_TEXT,
+    BookmarkValue, Color, Format, HighlightValue, Kind, MarkedValue, ProgressValue, MAX_BOOK_BYTES,
+    MAX_HIGHLIGHT_TEXT,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -57,7 +58,9 @@ pub fn import(store: &Store, bytes: &[u8], meta: ImportMeta) -> Result<Book> {
     store.stamp(vec![(Kind::Book, id.clone(), Some(serde_json::to_value(&value)?))])?;
     let progress = store.progress(&id)?;
     // The webview renders the cover right after importing.
-    Ok(Book { id, value, available: true, progress, cover: None })
+    let favorite = store.record(Kind::Favorite, &id)?.is_some_and(|r| r.value.is_some());
+    let finished_at = finished_at(store, &id)?;
+    Ok(Book { id, value, available: true, progress, cover: None, favorite, finished_at })
 }
 
 fn require_book(store: &Store, id: &str) -> Result<BookValue> {
@@ -87,21 +90,63 @@ pub fn remove(store: &Store, id: &str) -> Result<()> {
     let mut edits = vec![(Kind::Book, id.to_owned(), None)];
     edits.extend(store.bookmarks(id)?.into_iter().map(|b| (Kind::Bookmark, b.id, None)));
     edits.extend(store.highlights(Some(id))?.into_iter().map(|h| (Kind::Highlight, h.id, None)));
+    for kind in [Kind::Favorite, Kind::Finished] {
+        if store.record(kind, id)?.is_some_and(|r| r.value.is_some()) {
+            edits.push((kind, id.to_owned(), None));
+        }
+    }
     store.stamp(edits)?;
     store.release_deleted_blobs()?;
     Ok(())
 }
 
+/// Reading reaches the end: a PDF's last page, or the last screens of an EPUB (whose position is
+/// where the screen starts, so it never quite reaches 100%).
+fn at_the_end(format: Format, fraction: f64) -> bool {
+    match format {
+        Format::Pdf => fraction >= 0.9999,
+        Format::Epub => fraction >= 0.99,
+    }
+}
+
 pub fn set_progress(store: &Store, book: &str, location: String, label: String, fraction: f64) -> Result<Option<ProgressValue>> {
-    require_book(store, book)?;
+    let format = require_book(store, book)?.format;
     let current = store.progress(book)?;
     if current.as_ref().is_some_and(|p| p.location == location && p.label == label) {
         return Ok(None);
     }
     let value = ProgressValue { location, label, fraction: fraction.clamp(0.0, 1.0), updated_at: now_ms() };
     validate_progress(&value)?;
-    store.stamp(vec![(Kind::Progress, book.to_owned(), Some(serde_json::to_value(&value)?))])?;
+    let mut edits = vec![(Kind::Progress, book.to_owned(), Some(serde_json::to_value(&value)?))];
+    // Reaching the end finishes the book; reading it again later doesn't unfinish it.
+    if at_the_end(format, value.fraction) && finished_at(store, book)?.is_none() {
+        edits.push((Kind::Finished, book.to_owned(), Some(serde_json::to_value(MarkedValue { at: value.updated_at })?)));
+    }
+    store.stamp(edits)?;
     Ok(Some(value))
+}
+
+fn finished_at(store: &Store, book: &str) -> Result<Option<i64>> {
+    match store.record(Kind::Finished, book)?.and_then(|r| r.value) {
+        Some(value) => Ok(Some(serde_json::from_value::<MarkedValue>(value)?.at)),
+        None => Ok(None),
+    }
+}
+
+/// Stars or unstars a book (`Kind::Favorite`), or marks it finished or not (`Kind::Finished`).
+/// Returns whether anything changed.
+pub fn set_mark(store: &Store, kind: Kind, book: &str, on: bool) -> Result<bool> {
+    if !matches!(kind, Kind::Favorite | Kind::Finished) {
+        bail!("Unknown mark");
+    }
+    require_book(store, book)?;
+    let marked = store.record(kind, book)?.is_some_and(|r| r.value.is_some());
+    if marked == on {
+        return Ok(false);
+    }
+    let value = on.then(|| serde_json::to_value(MarkedValue { at: now_ms() })).transpose()?;
+    store.stamp(vec![(kind, book.to_owned(), value)])?;
+    Ok(true)
 }
 
 pub fn add_bookmark(store: &Store, book: &str, location: String, label: String) -> Result<Bookmark> {
@@ -255,6 +300,35 @@ mod tests {
         assert!(store.highlights(None).unwrap().is_empty());
         assert_eq!(store.summary().unwrap().3, 0);
         assert!(add_highlight(&store, &book.id, mark("epubcfi(/6/4)", Color::Yellow)).is_err());
+    }
+
+    #[test]
+    fn favorites_and_finishing_are_marks_that_leave_with_their_book() {
+        let store = Store::memory().unwrap();
+        let book = import(&store, &epub(), ImportMeta { title: "E".into(), author: None }).unwrap();
+        let get = |store: &Store| store.books().unwrap().into_iter().next().unwrap();
+        assert!(!get(&store).favorite && get(&store).finished_at.is_none());
+
+        assert!(set_mark(&store, Kind::Favorite, &book.id, true).unwrap());
+        assert!(!set_mark(&store, Kind::Favorite, &book.id, true).unwrap());
+        assert!(get(&store).favorite);
+
+        set_progress(&store, &book.id, "epubcfi(/6/4)".into(), "1%".into(), 0.5).unwrap();
+        assert!(get(&store).finished_at.is_none());
+        set_progress(&store, &book.id, "epubcfi(/6/90)".into(), "99%".into(), 0.993).unwrap();
+        let finished = get(&store).finished_at;
+        assert!(finished.is_some());
+        // Reading it again keeps it finished; unmarking is the reader's choice.
+        set_progress(&store, &book.id, "epubcfi(/6/8)".into(), "2%".into(), 0.02).unwrap();
+        assert_eq!(get(&store).finished_at, finished);
+        assert!(set_mark(&store, Kind::Finished, &book.id, false).unwrap());
+        assert!(get(&store).finished_at.is_none());
+        assert!(set_mark(&store, Kind::Bookmark, &book.id, true).is_err());
+
+        remove(&store, &book.id).unwrap();
+        for kind in [Kind::Favorite, Kind::Finished] {
+            assert!(store.record(kind, &book.id).unwrap().is_none_or(|r| r.value.is_none()));
+        }
     }
 
     #[test]
