@@ -1,5 +1,7 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
-import { mergeLines, pdfHighlightLocation, pdfHighlightRects, type PageRect } from "./highlights";
+import { EpubCFI } from "epubjs";
+import { cfiRepairs, mergeLines, overlaps, pdfHighlightLocation, pdfHighlightRects, textBounded, type PageRect } from "./highlights";
 import { pdfPage } from "./format";
 
 describe("PDF highlight locations", () => {
@@ -44,5 +46,75 @@ describe("mergeLines", () => {
     expect(first![2] + first![4]).toBeCloseTo(second![2]);
     expect(second![2]).toBeCloseTo(0.1175);
     expect(second![2] + second![4]).toBeCloseTo(0.135);
+  });
+});
+
+describe("overlaps", () => {
+  const text = () => {
+    document.body.innerHTML = "<p>Todos tenemos que superar obstáculos</p>";
+    return document.body.firstChild!.firstChild!;
+  };
+  const span = (node: Node, start: number, end: number) => {
+    const r = document.createRange();
+    r.setStart(node, start);
+    r.setEnd(node, end);
+    return r;
+  };
+
+  it("finds ranges sharing text, in either order", () => {
+    const t = text();
+    expect(overlaps(span(t, 0, 10), span(t, 5, 20))).toBe(true);
+    expect(overlaps(span(t, 5, 20), span(t, 0, 10))).toBe(true);
+    // One inside the other.
+    expect(overlaps(span(t, 0, 30), span(t, 10, 12))).toBe(true);
+    expect(overlaps(span(t, 10, 12), span(t, 0, 30))).toBe(true);
+  });
+
+  it("doesn't count ranges that only touch or are apart", () => {
+    const t = text();
+    expect(overlaps(span(t, 0, 5), span(t, 5, 10))).toBe(false);
+    expect(overlaps(span(t, 5, 10), span(t, 0, 5))).toBe(false);
+    expect(overlaps(span(t, 0, 3), span(t, 8, 12))).toBe(false);
+  });
+});
+
+describe("highlights starting at an image", () => {
+  // As in "Finanzas personales para Dummies": an icon wrapped in spans, then the paragraph's text.
+  const paragraph = () => {
+    document.body.innerHTML =
+      '<p><span class="text"><span><span><span class="icon"><img src="clave.jpg"/></span></span></span>Ganar más dinero no es la solución.</span></p>';
+    const icon = document.querySelector(".icon")!;
+    const text = document.querySelector(".text")!.lastChild as Text;
+    // A selection dragged from the icon starts between elements, right after the image.
+    const range = document.createRange();
+    range.setStart(icon, 1);
+    range.setEnd(text, 20);
+    return range;
+  };
+  const resolve = (cfi: string) => new EpubCFI(cfi).toRange(document)?.toString() ?? null;
+
+  it("is saved where epub.js can find it again", () => {
+    const range = paragraph();
+    // epub.js alone writes a text step that isn't there: the highlight can never be drawn.
+    expect(resolve(new EpubCFI(range, "/6/22!").toString())).toBeNull();
+    const bounded = textBounded(range);
+    expect(bounded.startContainer.nodeType).toBe(3);
+    expect(resolve(new EpubCFI(bounded, "/6/22!").toString())).toBe("Ganar más dinero no ");
+  });
+
+  it("mends ranges older versions saved with that step", () => {
+    const broken = new EpubCFI(paragraph(), "/6/22!").toString();
+    const mended = cfiRepairs(broken).map(resolve);
+    expect(mended).toContain("Ganar más dinero no ");
+    // The shape found in a real library.
+    expect(cfiRepairs("epubcfi(/6/22!/4/2/142/2/2,/2/2/2/1:1,/1:286)")).toContain("epubcfi(/6/22!/4/2/142/2/2,/2/2/2:1,/1:286)");
+    expect(cfiRepairs("epubcfi(/6/22!/4/2/142/2/2/1:4)")).toEqual([]);
+  });
+
+  it("leaves selections that are already in text alone", () => {
+    const range = paragraph();
+    const text = document.querySelector(".text")!.lastChild as Text;
+    range.setStart(text, 6);
+    expect(textBounded(range)).toBe(range);
   });
 });

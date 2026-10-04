@@ -75,7 +75,7 @@ export function Reader({ book, at, onClose }: Props) {
   const [contents, setContents] = useState<TocEntry[] | null>(null);
   // Selected text offered for highlighting, or a highlight that was tapped.
   const [selection, setSelection] = useState<TextSelection | null>(null);
-  const [menu, setMenu] = useState<{ id: string; rect: Rect } | null>(null);
+  const [menu, setMenu] = useState<{ id: string; rect: Rect; stacked?: string[] } | null>(null);
   const [remote, setRemote] = useState<Progress>();
   const [panel, setPanel] = useState(false);
   const [showDisplay, setShowDisplay] = useState(false);
@@ -359,7 +359,7 @@ export function Reader({ book, at, onClose }: Props) {
     setSelection(s);
     if (s) setMenu(null);
   }, []);
-  const onHighlightTap = useCallback((id: string, rect: Rect) => setMenu({ id, rect }), []);
+  const onHighlightTap = useCallback((id: string, rect: Rect, stacked?: string[]) => setMenu({ id, rect, stacked }), []);
   const onContents = useCallback((entries: TocEntry[]) => setContents(entries), []);
 
   const refreshHighlights = () => api.highlights(book.id).then(setHighlights);
@@ -374,7 +374,10 @@ export function Reader({ book, at, onClose }: Props) {
     const s = selection;
     if (!s) return;
     void attempt(async () => {
-      await api.addHighlight(book.id, { location: s.location, text: s.text, color, label: s.label, fraction: s.fraction });
+      const { location, text, label, fraction } = s.joins ?? s;
+      const added = await api.addHighlight(book.id, { location, text, color, label, fraction });
+      // The highlights it was drawn over are part of it now.
+      for (const id of s.joins?.ids ?? []) if (id !== added.id) await api.removeHighlight(id);
       s.clear();
       setSelection(null);
       await refreshHighlights();
@@ -385,9 +388,9 @@ export function Reader({ book, at, onClose }: Props) {
       await api.recolorHighlight(id, color);
       await refreshHighlights();
     });
-  const removeHighlight = (id: string) =>
+  const removeHighlight = (id: string, stacked: string[] = []) =>
     void attempt(async () => {
-      await api.removeHighlight(id);
+      for (const one of [id, ...stacked]) await api.removeHighlight(one);
       setMenu(null);
       await refreshHighlights();
     });
@@ -555,7 +558,8 @@ export function Reader({ book, at, onClose }: Props) {
         <div className="mb-1.5 flex items-center justify-between gap-3 text-xs text-muted-foreground">
           <span className="min-w-0 truncate">
             {position?.label ?? initial?.label ?? "Opening…"}
-            <span className="ml-2 tabular-nums">{Math.round(fraction * 100)}%</span>
+            {/* EPUB places already end in their percentage ("Chapter 3 · 37%"). */}
+            {pdf && <span className="ml-2 tabular-nums">{Math.round(fraction * 100)}%</span>}
           </span>
           <div className="flex shrink-0 items-center" role="group" aria-label={pdf ? "Zoom" : "Text size"}>
             <Button
@@ -622,7 +626,7 @@ export function Reader({ book, at, onClose }: Props) {
             copy(tapped.text);
             setMenu(null);
           }}
-          onRemove={() => removeHighlight(tapped.id)}
+          onRemove={() => removeHighlight(tapped.id, menu.stacked)}
         />
       )}
 

@@ -193,6 +193,7 @@ function fontFaces(): string {
 /**
  * The stylesheet injected into every EPUB chapter. Books ship their own colours (usually black
  * on white), which must lose to the skin or text vanishes in dark mode, so colours are forced.
+ * Blocks the book tinted (marked by `adjustBookStyles`) get the skin's line colour instead.
  */
 export function pageCss(display: Display, p: Palette): string {
   const font = FONTS.find((f) => f.id === display.font)?.stack ?? null;
@@ -214,6 +215,8 @@ ${
       } }`
 }
 body * { color: inherit !important; background-color: transparent !important; border-color: ${p.line} !important; }
+body [data-reader-box] { background-color: ${p.line} !important; border-radius: 0.375em; }
+body [data-reader-box="block"] { padding: 0.75em 1em; }
 a, a * { color: ${p.accent} !important; }
 ${font ? `body, body *:not(code):not(pre):not(kbd):not(samp) { font-family: ${font} !important; }` : ""}
 ${

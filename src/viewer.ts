@@ -64,8 +64,8 @@ export interface ViewerProps {
   highlights: Highlight[];
   /** Text was selected (or the selection moved or went away: `null`). */
   onSelect: (selection: TextSelection | null) => void;
-  /** A tap landed on a highlight. */
-  onHighlightTap: (id: string, rect: Rect) => void;
+  /** A tap landed on a highlight. `stacked`: others over the same words, which go with it. */
+  onHighlightTap: (id: string, rect: Rect, stacked?: string[]) => void;
   /** The book's table of contents, once known (empty when it has none). */
   onContents: (entries: TocEntry[]) => void;
   /** The search match to mark on the page, if any. */

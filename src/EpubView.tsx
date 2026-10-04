@@ -1,11 +1,12 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import ePub, { EpubCFI, type Book, type Contents, type NavItem, type Rendition } from "epubjs";
 import type { Highlight } from "./api";
-import { byAge, highlightCss, highlightName, SEARCH_MARK, SWATCHES, type Rect, type TextSelection } from "./highlights";
+import { byAge, cfiRepairs, highlightCss, highlightName, overlaps, SEARCH_MARK, SWATCHES, textBounded, type Rect, type TextSelection } from "./highlights";
 import { excerpt, foldQuery, matches, MAX_HITS, type OnFound, type SearchHit } from "./search";
 import { epubLabel } from "./format";
 import { GLIDE, isPageTap, type TocEntry, type ViewerHandle, type ViewerProps } from "./viewer";
 import { stripActiveContent } from "./sanitize";
+import { adjustBookStyles } from "./bookstyle";
 import { attachPinch, type Focal } from "./pinch";
 import { clampSize } from "./display";
 import { Scrubber } from "./Scrubber";
@@ -189,6 +190,43 @@ function applyLook(doc: Document, css: string) {
   if (style.textContent !== css) style.textContent = css;
 }
 
+/** Resolves once the chapters on screen have their fonts and images (or after a while). */
+function settled(view: Rendition): Promise<void> {
+  const docs = (view.getContents() as unknown as Contents[]).map((c) => c.document);
+  const waits = docs.flatMap((doc) => [
+    doc.fonts?.ready,
+    ...Array.from(doc.images)
+      .filter((image) => !image.complete)
+      .map((image) => new Promise((done) => (image.addEventListener("load", done), image.addEventListener("error", done)))),
+  ]);
+  // Chapter frames take their new size a moment after their content does.
+  const loaded = Promise.all(waits).then(() => new Promise((done) => setTimeout(done, 150)));
+  return Promise.race([loaded, new Promise((done) => setTimeout(done, 2000))]).then(() => {});
+}
+
+/**
+ * A spot in a chapter on screen, mending ranges older versions saved wrong (see `textBounded`).
+ * `cfi` is the reading that worked.
+ */
+function locate(range: (cfi: string) => Range | null, cfi: string): { cfi: string; range: Range } | null {
+  for (const reading of [cfi, ...cfiRepairs(cfi)]) {
+    try {
+      const found = range(reading);
+      if (found) return { cfi: reading, range: found };
+    } catch {}
+  }
+  return null;
+}
+const inView = (view: Rendition, cfi: string) => locate((c) => view.getRange(c), cfi);
+
+/** Resolves once a spot's chapter is on the page (or after a while). */
+async function onPage(view: Rendition, cfi: string) {
+  for (let tries = 0; tries < 100; tries++) {
+    if (inView(view, cfi)) return;
+    await new Promise((done) => setTimeout(done, 100));
+  }
+}
+
 const locationsKey = (id: string) => `reader:epub-locations:${id}`;
 
 /** Where a range inside a chapter's frame is on the screen. */
@@ -231,7 +269,7 @@ function paint(contents: Contents, list: Highlight[], dark: boolean) {
     if (!h.location.startsWith("epubcfi(")) continue;
     try {
       if (new EpubCFI(h.location).spinePos !== contents.sectionIndex) continue;
-      const range = contents.range(h.location);
+      const range = locate((c) => contents.range(c), h.location)?.range;
       if (range && !range.collapsed) here.push({ id: h.id, range, color: h.color });
     } catch {
       // A highlight from a different edition of the book; nothing to paint.
@@ -314,6 +352,17 @@ function searchSection(doc: Document, query: string, cfiBase: string, index: num
   return hits;
 }
 
+/** The highlights painted over a range, and one range covering it and them. */
+function under(doc: Document, range: Range): { ids: string[]; range: Range } {
+  const hits = (painted.get(doc) ?? []).filter((p) => overlaps(p.range, range));
+  const union = range.cloneRange();
+  for (const { range: r } of hits) {
+    if (r.compareBoundaryPoints(Range.START_TO_START, union) < 0) union.setStart(r.startContainer, r.startOffset);
+    if (r.compareBoundaryPoints(Range.END_TO_END, union) > 0) union.setEnd(r.endContainer, r.endOffset);
+  }
+  return { ids: hits.map((p) => p.id), range: union };
+}
+
 function hitHighlight(doc: Document, x: number, y: number): Painted | undefined {
   const list = painted.get(doc) ?? [];
   for (let i = list.length - 1; i >= 0; i--) {
@@ -380,6 +429,8 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
   const shown = useRef<string | undefined>(initial);
   const opened = useRef(false);
   const clearMark = useRef<() => void>(() => {});
+  // Puts a spot back in place once its chapter has finished laying out (set up with the book).
+  const place = useRef<(view: Rendition, cfi: string, save: boolean) => Promise<void>>(() => Promise.resolve());
   const mark = (view: Rendition, cfi: string) => {
     clearMark.current();
     clearMark.current = markResume(view, cfi);
@@ -609,6 +660,38 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
     };
     const inputs = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
 
+    // epub.js places a spot as soon as its chapter is drawn, but the chapter keeps changing as its
+    // fonts and images arrive and, scrolling, as the chapters around it load: a highlight opened
+    // from elsewhere ended up a page early, or far down the screen. Once the chapter settles, put
+    // the spot back. Highlights and search matches (ranges) go a quarter of the way down, clear of
+    // the header; other spots (bookmarks, a synced page) at the top, as epub.js puts them.
+    place.current = async (view, cfi, save) => {
+      const asked = Date.now();
+      await settled(view);
+      // The reader moved on in the meantime, or the book was reopened.
+      if (!alive || view !== active.view || inputUntil.current > asked + 1500) return;
+      const b = box(active);
+      const found = inView(view, cfi);
+      if (!b || !found) return;
+      const range = found.range;
+      const frame = range.startContainer.ownerDocument?.defaultView?.frameElement?.getBoundingClientRect();
+      const r = range.getClientRects()[0] ?? range.getBoundingClientRect();
+      if (!frame || (!r.width && !r.height && !r.top && !r.left)) return;
+      const area = b.getBoundingClientRect();
+      if (layout === "pages") {
+        const left = r.left + frame.left;
+        if (left >= area.left && left < area.right) return;
+        forced.current = save;
+        await view.display(found.cfi);
+      } else {
+        const want = cfi.includes(",") ? b.clientHeight / 4 : 0;
+        const off = r.top + frame.top - area.top - want;
+        if (Math.abs(off) < 8) return;
+        forced.current = save;
+        b.scrollTop += off;
+      }
+    };
+
     const mountStage = (hidden: boolean): Stage => {
       const layer = document.createElement("div");
       layer.className = "epub-stage";
@@ -645,6 +728,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
         });
       }
       view.hooks.content.register((contents: Contents) => {
+        adjustBookStyles(contents.document);
         applyLook(contents.document, look.current);
         paint(contents, marks.current, darkPage.current);
         markFound(contents, foundNow.current);
@@ -697,8 +781,11 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
         if (stage !== active || !isPageTap(e)) return;
         const doc = (e.target as Node | null)?.ownerDocument;
         const hit = doc ? hitHighlight(doc, e.clientX, e.clientY) : undefined;
-        if (hit) tappedMark.current(hit.id, viewportRect(hit.range));
-        else tap.current();
+        if (!hit || !doc) return tap.current();
+        // Older versions could stack highlights on the same words; removing one alone
+        // would leave the page looking unchanged.
+        const stacked = under(doc, hit.range).ids.filter((id) => id !== hit.id);
+        tappedMark.current(hit.id, viewportRect(hit.range), stacked);
       });
       // epub.js reports a selection once it settles.
       view.on("selected", (cfiRange: string, contents: Contents) => {
@@ -710,15 +797,28 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
         const text = (current.toString() || range.toString()).trim();
         if (!text) return;
         const index = contents.sectionIndex;
-        const located = book.locations.length() ? book.locations.percentageFromCfi(cfiRange) : -1;
-        const fraction = Math.min(1, Math.max(0, located >= 0 ? located : spans.current.length ? toBook(spans.current, index, 0) : 0));
         const href = book.spine.get(index)?.href;
+        const placeOf = (cfi: string) => {
+          const located = book.locations.length() ? book.locations.percentageFromCfi(cfi) : -1;
+          const fraction = Math.min(1, Math.max(0, located >= 0 ? located : spans.current.length ? toBook(spans.current, index, 0) : 0));
+          return { fraction, label: epubLabel(fraction, href ? chapterOf(book, href) : undefined) };
+        };
+        const bounded = textBounded(range);
+        const location = bounded === range ? cfiRange : contents.cfiFromRange(bounded);
+        // Highlighting over highlights already there makes one highlight of them all.
+        const over = under(contents.document, bounded);
+        let joins: TextSelection["joins"];
+        if (over.ids.length) {
+          const all = textBounded(over.range);
+          const joined = contents.cfiFromRange(all);
+          joins = { ids: over.ids, location: joined, text: all.toString().trim(), ...placeOf(joined) };
+        }
         const offer = {
-          location: cfiRange,
+          location,
           text,
-          label: epubLabel(fraction, href ? chapterOf(book, href) : undefined),
-          fraction,
+          ...placeOf(location),
           clear: () => contents.document.getSelection()?.removeAllRanges(),
+          joins,
         };
         selection = { range, offer };
         follow();
@@ -765,7 +865,11 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
     const opening = active;
     opening.view
       .display(start || undefined)
-      .then(() => first && initial && resume && mark(opening.view, initial))
+      .then(() => {
+        if (first && initial && resume) mark(opening.view, initial);
+        // Opening somewhere picked (a highlight from the library) is the reader going there.
+        if (start) void place.current(opening.view, start, first && !resume);
+      })
       .catch(() => opening.view.display())
       .catch(onError);
     // Building the index takes a few seconds on a long book, so it's cached per device.
@@ -878,7 +982,15 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
       },
       // Following another device: show where it is, like opening at a synced spot.
       goTo: (location, save = true) =>
-        navigate(save, (v) => v.display(location).then(() => void (!save && mark(v, location)))),
+        navigate(save, async (v) => {
+          const shown = v.display(location);
+          if (!location.startsWith("epubcfi(")) return;
+          // Scrolling, epub.js's display() can stay pending until the next one (its follow-up
+          // work queues behind itself), so go on once the spot's chapter is on the page.
+          await Promise.race([shown, onPage(v, location)]);
+          if (!save) mark(v, location);
+          await place.current(v, location, save);
+        }),
     };
   });
 

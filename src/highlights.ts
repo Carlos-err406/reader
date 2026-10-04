@@ -52,6 +52,54 @@ export interface TextSelection {
   rect: Rect;
   /** Drops the selection once it's been highlighted. */
   clear: () => void;
+  /**
+   * EPUB: the selection runs into highlights already there. Highlighting it makes one highlight
+   * covering them all (`location`, `text`, `label`, `fraction`) in place of those (`ids`).
+   */
+  joins?: { ids: string[]; location: string; text: string; label: string; fraction: number };
+}
+
+/**
+ * Whether two ranges share some text (merely touching doesn't count): each starts before the
+ * other ends. (END_TO_START compares a's start with b's end; START_TO_END, a's end with b's start.)
+ */
+export const overlaps = (a: Range, b: Range) =>
+  a.compareBoundaryPoints(Range.END_TO_START, b) < 0 && a.compareBoundaryPoints(Range.START_TO_END, b) > 0;
+
+/**
+ * The range with its ends moved into text. A selection can start or end between elements (one
+ * starting at an image does), and epub.js writes such an end as a spot in a text node that isn't
+ * there: the highlight was saved, but could never be drawn.
+ */
+export function textBounded(range: Range): Range {
+  const TEXT = 3;
+  if (range.startContainer.nodeType === TEXT && range.endContainer.nodeType === TEXT) return range;
+  const root = range.commonAncestorContainer;
+  const walker = (root.ownerDocument ?? (root as Document)).createTreeWalker(root, 4 /* SHOW_TEXT */);
+  const texts: Text[] = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (range.intersectsNode(n) && /\S/.test((n as Text).data)) texts.push(n as Text);
+  }
+  const first = texts[0];
+  const last = texts[texts.length - 1];
+  if (!first || !last) return range;
+  const bounded = range.cloneRange();
+  if (range.startContainer.nodeType !== TEXT) bounded.setStart(first, 0);
+  if (range.endContainer.nodeType !== TEXT) bounded.setEnd(last, last.length);
+  return bounded;
+}
+
+/**
+ * Other readings of a range CFI saved with a text step that isn't there (see `textBounded`):
+ * without that step, it's the spot between elements the selection really had.
+ */
+export function cfiRepairs(cfi: string): string[] {
+  const parts = cfi.match(/^epubcfi\(([^,]*),([^,]*),([^,]*)\)$/);
+  if (!parts) return [];
+  const [, base, start, end] = parts as unknown as [string, string, string, string];
+  const drop = (part: string) => part.replace(/(.)\/1:(\d+)$/, "$1:$2");
+  const tries = [`${base},${drop(start)},${end}`, `${base},${start},${drop(end)}`, `${base},${drop(start)},${drop(end)}`];
+  return [...new Set(tries.map((t) => `epubcfi(${t})`))].filter((t) => t !== cfi);
 }
 
 /** One marked rectangle on a PDF page, as fractions of the page: page, x, y, width, height. */
