@@ -3,7 +3,7 @@
 use crate::error::{bail, Result};
 use crate::sync::model::{
     canonical, cover_image, parse_member_id, validate_record, BookValue, BookmarkValue, CollectionValue, CoverValue,
-    HighlightValue, Kind, ProgressValue, Record, Revision,
+    HighlightValue, Kind, PaceValue, ProgressValue, Record, Revision,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
@@ -365,6 +365,16 @@ impl Store {
     }
 
     /// One book's highlights, or every book's, in reading order. A deleted book's are left out.
+    /// Every device's reading speed, by device.
+    pub fn paces(&self) -> Result<Vec<(String, PaceValue)>> {
+        let conn = self.lock();
+        let rows = conn
+            .prepare("SELECT id, value FROM records WHERE kind='pace' AND value IS NOT NULL")?
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter().map(|(id, value)| Ok((id, serde_json::from_str(&value)?))).collect()
+    }
+
     pub fn highlights(&self, book: Option<&str>) -> Result<Vec<Highlight>> {
         let conn = self.lock();
         let rows = conn

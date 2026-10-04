@@ -87,8 +87,24 @@ export interface Status {
 }
 
 export interface Changed {
-  kind: "book" | "progress" | "bookmark" | "highlight" | "favorite" | "finished" | "collection" | "member" | "cover";
+  kind: "book" | "progress" | "bookmark" | "highlight" | "favorite" | "finished" | "collection" | "member" | "cover" | "pace";
   id: string;
+}
+
+/** Reading measured on one device: `units` (EPUB locations of about 1200 characters, or PDF pages) in `minutes`. */
+export interface Reading {
+  units: number;
+  minutes: number;
+}
+export interface DevicePace {
+  epub?: Reading | null;
+  pdf?: Reading | null;
+  at: number;
+}
+/** Reading speeds, synced: this device's, which it adds to, and every other device's. */
+export interface Paces {
+  mine: DevicePace | null;
+  others: DevicePace[];
 }
 
 export interface Position {
@@ -124,6 +140,8 @@ export const api = {
   setProgress: (bookId: string, p: Position) => invoke<void>("set_progress", { bookId, ...p }),
   setFavorite: (bookId: string, on: boolean) => invoke<void>("set_favorite", { bookId, on }),
   setFinished: (bookId: string, on: boolean) => invoke<void>("set_finished", { bookId, on }),
+  paces: () => invoke<Paces>("get_paces"),
+  setPace: (pace: DevicePace) => invoke<void>("set_pace", { pace }),
   collections: () => invoke<Collection[]>("list_collections"),
   createCollection: (name: string) => invoke<Collection>("create_collection", { name }),
   renameCollection: (id: string, name: string) => invoke<void>("rename_collection", { id, name }),

@@ -3,10 +3,10 @@ use crate::error::{bail, Result};
 use crate::store::{now_ms, Book, Bookmark, Collection, Highlight, Store};
 use crate::sync::model::{
     is_sha256, validate_book, validate_bookmark, validate_highlight, validate_progress, BookValue,
-    BookmarkValue, Color, CollectionValue, CoverValue, Format, HighlightValue, Kind, MarkedValue, ProgressValue,
+    BookmarkValue, Color, CollectionValue, CoverValue, Format, HighlightValue, Kind, MarkedValue, PaceValue, ProgressValue,
     MAX_BOOK_BYTES, MAX_COLLECTION_NAME, MAX_COVER_IMAGE, MAX_HIGHLIGHT_TEXT, is_uuid, member_id,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub fn sha256(bytes: &[u8]) -> String {
@@ -180,6 +180,25 @@ fn finished_at(store: &Store, book: &str) -> Result<Option<i64>> {
         Some(value) => Ok(Some(serde_json::from_value::<MarkedValue>(value)?.at)),
         None => Ok(None),
     }
+}
+
+/// Reading speeds: this device's, which it adds to, and every other device's.
+#[derive(Debug, Serialize)]
+pub struct Paces {
+    pub mine: Option<PaceValue>,
+    pub others: Vec<PaceValue>,
+}
+
+pub fn paces(store: &Store) -> Result<Paces> {
+    let me = store.replica()?;
+    let (mine, others): (Vec<_>, Vec<_>) = store.paces()?.into_iter().partition(|(device, _)| *device == me);
+    Ok(Paces { mine: mine.into_iter().next().map(|(_, p)| p), others: others.into_iter().map(|(_, p)| p).collect() })
+}
+
+/// Saves this device's reading speed. Each device has its own record, so none overwrites another's.
+pub fn set_pace(store: &Store, pace: PaceValue) -> Result<()> {
+    let pace = PaceValue { at: now_ms(), ..pace };
+    store.stamp(vec![(Kind::Pace, store.replica()?, Some(serde_json::to_value(pace)?))])
 }
 
 /// Stars or unstars a book (`Kind::Favorite`), or marks it finished or not (`Kind::Finished`).
@@ -398,6 +417,28 @@ mod tests {
             label: "Chapter 1 · 1%".into(),
             fraction: 0.01,
         }
+    }
+
+    #[test]
+    fn each_device_keeps_its_own_pace() {
+        let reading = |units, minutes| Some(crate::sync::model::Reading { units, minutes });
+        let phone = Store::memory().unwrap();
+        let laptop = Store::memory().unwrap();
+        set_pace(&phone, PaceValue { epub: reading(30.0, 20.0), pdf: None, at: 0 }).unwrap();
+        set_pace(&laptop, PaceValue { epub: reading(90.0, 60.0), pdf: reading(4.0, 10.0), at: 0 }).unwrap();
+        // Both reach each other, in both directions, and neither overwrites the other.
+        phone.apply(&laptop.records().unwrap()).unwrap();
+        laptop.apply(&phone.records().unwrap()).unwrap();
+        let seen = paces(&phone).unwrap();
+        assert_eq!(seen.mine.unwrap().epub, reading(30.0, 20.0));
+        assert_eq!(seen.others.len(), 1);
+        assert_eq!(seen.others[0].pdf, reading(4.0, 10.0));
+        assert_eq!(paces(&laptop).unwrap().others[0].epub, reading(30.0, 20.0));
+        // A newer reading replaces this device's own.
+        set_pace(&phone, PaceValue { epub: reading(40.0, 25.0), pdf: None, at: 0 }).unwrap();
+        assert_eq!(paces(&phone).unwrap().mine.unwrap().epub, reading(40.0, 25.0));
+        assert!(set_pace(&phone, PaceValue { epub: reading(f64::NAN, 1.0), pdf: None, at: 0 }).is_err());
+        assert!(set_pace(&phone, PaceValue { epub: reading(-1.0, 1.0), pdf: None, at: 0 }).is_err());
     }
 
     #[test]

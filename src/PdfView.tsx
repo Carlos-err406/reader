@@ -495,6 +495,7 @@ function PdfPages({ doc, page, setPage, dark, zoom, handle, onPageClick, onPinch
       glide: (forward) => setPage((p) => Math.min(Math.max(p + (forward ? 1 : -1), 1), pages)),
       goTo: (location) => setPage(pdfPage(location, pages)),
       apart: (a, b) => Math.abs(pdfPage(a, pages) - pdfPage(b, pages)),
+      length: () => pages,
       search,
     }),
     [pages, setPage, search],
@@ -629,6 +630,7 @@ function PdfScroll({
         frame.current?.scrollTo({ top: tops[target - 1]! - GAP, behavior: "smooth" });
       },
       apart: (a, b) => Math.abs(pdfPage(a, doc.numPages) - pdfPage(b, doc.numPages)),
+      length: () => doc.numPages,
       search,
     }),
     [doc, width, aspects, search],

@@ -101,6 +101,8 @@ export interface ViewerHandle {
   goTo(location: string, how?: Jump): void;
   /** About how many screens (EPUB) or pages (PDF) apart two places are; null until that's known. */
   apart(a: string, b: string): number | null;
+  /** The book's length in the same units (EPUB locations, PDF pages); null until that's known. */
+  length(): number | null;
   /** Searches the whole book, reporting matches as it goes, until done or aborted. */
   search(query: string, onFound: OnFound, signal: AbortSignal): Promise<void>;
 }

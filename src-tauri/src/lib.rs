@@ -188,6 +188,18 @@ fn remove_bookmark(id: String, state: State<'_, AppState>) -> Result<()> {
 }
 
 #[tauri::command]
+fn get_paces(state: State<'_, AppState>) -> Result<library::Paces> {
+    library::paces(&state.store)
+}
+
+#[tauri::command]
+fn set_pace(pace: sync::model::PaceValue, state: State<'_, AppState>) -> Result<()> {
+    library::set_pace(&state.store, pace)?;
+    state.sync.local_changed();
+    Ok(())
+}
+
+#[tauri::command]
 fn set_favorite(book_id: String, on: bool, state: State<'_, AppState>) -> Result<()> {
     if library::set_mark(&state.store, sync::model::Kind::Favorite, &book_id, on)? {
         state.sync.local_changed();
@@ -426,6 +438,8 @@ pub fn run() {
             remove_bookmark,
             set_favorite,
             set_finished,
+            get_paces,
+            set_pace,
             set_book_cover,
             edit_book,
             list_collections,

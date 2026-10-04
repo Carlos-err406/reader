@@ -7,6 +7,7 @@ import {
   type Bookmark,
   type Highlight,
   type HighlightColor,
+  type Paces,
   type Position,
   type Progress,
 } from "./api";
@@ -23,6 +24,7 @@ import { MarksPanel } from "./MarksPanel";
 import { SearchPanel } from "./SearchPanel";
 import type { SearchHit } from "./search";
 import { currentEntry } from "./viewer";
+import { add, amount, follow, rate, timeLeft, timeLeftLine, total, type Stretch } from "./pace";
 import {
   Bookmark as BookmarkIcon,
   BookmarkCheck,
@@ -85,6 +87,33 @@ export function Reader({ book, at, onClose }: Props) {
   // one until they read on from where they looked, choose to stay there, or go back.
   const look = useRef<{ back: Position; to: string; arrived: boolean } | null>(null);
   const [back, setBack] = useState<Position>();
+  // Reading speed, for the time left: every device's, synced. `stretch` is the reading going on.
+  const kind = book.format === "pdf" ? "pdf" : "epub";
+  const [paces, setPaces] = useState<Paces>({ mine: null, others: [] });
+  useEffect(() => void api.paces().then(setPaces, () => {}), []);
+  const stretch = useRef<{ now: Stretch; size: number } | null>(null);
+  const finish = useCallback(
+    (done: Stretch, size: number) => {
+      const { units, minutes } = amount(done, size);
+      void (async () => {
+        const latest = await api.paces();
+        const before = latest.mine?.[kind] ?? undefined;
+        const after = add(before, units, minutes, kind);
+        // Not reading after all (a skim, a moment): nothing to save.
+        if (after === before || (!before && !after.minutes)) return;
+        const mine = { ...latest.mine, at: Date.now(), [kind]: after };
+        await api.setPace(mine);
+        setPaces({ ...latest, mine });
+      })().catch(() => {});
+    },
+    [kind],
+  );
+  useEffect(
+    () => () => {
+      if (stretch.current) finish(stretch.current.now, stretch.current.size);
+    },
+    [finish],
+  );
   const [panel, setPanel] = useState(false);
   const [showDisplay, setShowDisplay] = useState(false);
   // The header and progress bar float over the page; tapping the page shows or hides them.
@@ -187,6 +216,7 @@ export function Reader({ book, at, onClose }: Props) {
         void api.books().then((books) => setFavorite(!!books.find((b) => b.id === book.id)?.favorite));
       }
       if (changed.some((c) => c.kind === "highlight")) void api.highlights(book.id).then(setHighlights);
+      if (changed.some((c) => c.kind === "pace")) void api.paces().then(setPaces);
     });
     return () => void unlisten.then((f) => f());
   }, [book.id, onClose]);
@@ -340,6 +370,13 @@ export function Reader({ book, at, onClose }: Props) {
       stir.current();
       const opening = !opened.current;
       opened.current = true;
+      // How far the reader gets in how long, from the moves they make themselves.
+      const size = viewer.current?.length();
+      if (size) {
+        const next = follow(stretch.current?.now ?? null, p.fraction, Date.now(), size, moved);
+        if (next.ended && stretch.current) finish(next.ended, stretch.current.size);
+        stretch.current = { now: next.stretch, size };
+      }
       // Opening at a highlight from the library is the reader going there.
       const save = moved || (opening && !!at);
       const visit = look.current;
@@ -364,7 +401,7 @@ export function Reader({ book, at, onClose }: Props) {
       setRemote(undefined);
       api.setProgress(book.id, p).catch((e) => setError(message(e)));
     },
-    [book.id, at],
+    [book.id, at, finish],
   );
 
   const onError = useCallback((e: unknown) => setError(message(e)), []);
@@ -478,6 +515,10 @@ export function Reader({ book, at, onClose }: Props) {
   const View = book.format === "pdf" ? PdfView : EpubView;
 
   const fraction = position?.fraction ?? initial?.fraction ?? 0;
+  const length = position ? viewer.current?.length() : null;
+  const reading = stretch.current && amount(stretch.current.now, stretch.current.size);
+  const pace = reading ? add(total(paces, kind), reading.units, reading.minutes, kind) : total(paces, kind);
+  const left = length ? timeLeftLine(timeLeft(fraction, length, contents, rate(pace, kind))) : null;
   // The page (PDF) or section (EPUB) being read, to mark the chapter in the contents.
   const here = position?.location ?? initial?.location;
   const place = !here ? 0 : pdf ? Number.parseInt(here, 10) || 1 : sectionOf(here);
@@ -655,6 +696,7 @@ export function Reader({ book, at, onClose }: Props) {
         <div className="meter">
           <div style={{ width: `${Math.round(fraction * 100)}%` }} />
         </div>
+        {left && <p className="mt-1.5 truncate text-xs text-muted-foreground">{left}</p>}
       </footer>
 
       {badge && (

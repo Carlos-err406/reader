@@ -993,6 +993,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
           await place.current(v, location, save);
         });
       },
+      length: () => bookNow.current?.locations.length() || null,
       // Locations are about 1200 characters: roughly a screen.
       apart: (a, b) => {
         const locations = bookNow.current?.locations;

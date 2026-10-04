@@ -59,6 +59,9 @@ pub enum Kind {
     Member,
     /// A cover chosen for a book, replacing the one drawn from its file. The id is the book's.
     Cover,
+    /// One device's reading speed, for the time left in a book. The id is the device's replica
+    /// id: each device writes only its own, and readers combine them all.
+    Pace,
 }
 
 impl Kind {
@@ -73,11 +76,12 @@ impl Kind {
             Kind::Collection => "collection",
             Kind::Member => "member",
             Kind::Cover => "cover",
+            Kind::Pace => "pace",
         }
     }
 
     /// Every kind this version understands.
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 10] = [
         Kind::Book,
         Kind::Progress,
         Kind::Bookmark,
@@ -87,6 +91,7 @@ impl Kind {
         Kind::Collection,
         Kind::Member,
         Kind::Cover,
+        Kind::Pace,
     ];
 
     pub fn parse(value: &str) -> Result<Self> {
@@ -221,6 +226,33 @@ pub fn parse_member_id(id: &str) -> Option<(&str, &str)> {
     (is_uuid(collection) && is_sha256(book)).then_some((collection, book))
 }
 
+/// Reading measured on one device: `units` read (EPUB locations of about 1200 characters, or PDF
+/// pages) in `minutes`, over its latest reading.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reading {
+    pub units: f64,
+    pub minutes: f64,
+}
+
+/// One device's reading speed, by format.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PaceValue {
+    #[serde(default)]
+    pub epub: Option<Reading>,
+    #[serde(default)]
+    pub pdf: Option<Reading>,
+    pub at: i64,
+}
+
+pub fn validate_pace(value: &PaceValue) -> Result<()> {
+    let reading = |r: &Reading| {
+        r.units.is_finite() && r.minutes.is_finite() && (0.0..=1e6).contains(&r.units) && (0.0..=1e4).contains(&r.minutes)
+    };
+    check(value.epub.as_ref().is_none_or(reading) && value.pdf.as_ref().is_none_or(reading) && time(value.at))
+}
+
 /// When a book was starred, finished or added to a collection.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -312,7 +344,7 @@ pub fn validate_record(record: &Record) -> Result<()> {
     check(time(r.time) && r.counter >= 0 && text(&r.actor, 200))?;
     match record.kind {
         Kind::Book | Kind::Progress | Kind::Favorite | Kind::Finished | Kind::Cover => check(is_sha256(&record.id))?,
-        Kind::Bookmark | Kind::Highlight | Kind::Collection => check(is_uuid(&record.id))?,
+        Kind::Bookmark | Kind::Highlight | Kind::Collection | Kind::Pace => check(is_uuid(&record.id))?,
         Kind::Member => check(parse_member_id(&record.id).is_some())?,
     }
     let Some(value) = &record.value else { return Ok(()) };
@@ -330,6 +362,7 @@ pub fn validate_record(record: &Record) -> Result<()> {
             let cover: CoverValue = serde_json::from_value(value).map_err(|_| invalid())?;
             check(time(cover.at) && cover_image(&cover).is_some())
         }
+        Kind::Pace => validate_pace(&serde_json::from_value(value).map_err(|_| invalid())?),
         Kind::Favorite | Kind::Finished | Kind::Member => {
             let marked: MarkedValue = serde_json::from_value(value).map_err(|_| invalid())?;
             check(time(marked.at))
