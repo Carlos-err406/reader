@@ -413,7 +413,8 @@ mod tests {
         assert_eq!(store.summary().unwrap().3, 2);
 
         set_highlight_color(&store, &first.id, Color::Green).unwrap();
-        assert_eq!(store.highlights(None).unwrap()[0].value.color, Color::Green);
+        let recoloured = store.highlights(None).unwrap().into_iter().find(|h| h.id == first.id).unwrap();
+        assert_eq!(recoloured.value.color, Color::Green);
         remove_highlight(&store, &first.id).unwrap();
         assert!(set_highlight_color(&store, &first.id, Color::Pink).is_err());
         assert_eq!(store.highlights(None).unwrap().len(), 1);
