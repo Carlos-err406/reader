@@ -171,6 +171,8 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
   const allPicked = selectable.length > 0 && selectable.every((b) => selected?.has(b.id));
   const favoritePicked = picked.length > 0 && picked.every((b) => b.favorite);
   const favoriteMany = () => void mark(Promise.all(picked.map((b) => api.setFavorite(b.id, !favoritePicked))).then(() => {}));
+  const finishedPicked = picked.length > 0 && picked.every((b) => b.finishedAt);
+  const finishMany = () => void mark(Promise.all(picked.map((b) => api.setFinished(b.id, !finishedPicked))).then(() => {}));
   const removeMany = async (list: Book[]) => {
     for (const b of list) await remove(b);
     setSelected(null);
@@ -780,6 +782,16 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
             <Button variant="ghost" size={wide ? "sm" : "icon"} disabled={!picked.length} onClick={() => setFiling(picked)} aria-label="Add to collection">
               <Tag />
               {wide && "Collection"}
+            </Button>
+            <Button
+              variant="ghost"
+              size={wide ? "sm" : "icon"}
+              disabled={!picked.length}
+              onClick={finishMany}
+              aria-label={finishedPicked ? "Mark as not finished" : "Mark as finished"}
+            >
+              {finishedPicked ? <RotateCcw /> : <CircleCheck />}
+              {wide && (finishedPicked ? "Not finished" : "Finished")}
             </Button>
             <Button
               variant="ghost"
