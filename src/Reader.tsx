@@ -12,7 +12,7 @@ import {
 } from "./api";
 import { EpubView, sectionOf } from "./EpubView";
 import { PdfView } from "./PdfView";
-import type { TocEntry, ViewerHandle } from "./viewer";
+import type { Jump, TocEntry, ViewerHandle } from "./viewer";
 import { DisplaySheet } from "./DisplaySheet";
 import { pageCss, SIZES, stepSize } from "./display";
 import { clampZoom, stepZoom } from "./pinch";
@@ -36,6 +36,7 @@ import {
   Minimize2,
   Star,
   Type,
+  Undo2,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -53,6 +54,9 @@ interface Props {
 
 // Android hides its system bars instead; the desktop window can go fullscreen.
 const desktop = !/android/i.test(navigator.userAgent);
+
+/** Reading on this many screens (EPUB) or pages (PDF) from a place looked at makes it the reader's. */
+const READ_ON = 3;
 
 /** How long the screen stays on without the reader touching the book. */
 const AWAKE_FOR = 10 * 60 * 1000;
@@ -77,6 +81,10 @@ export function Reader({ book, at, onClose }: Props) {
   const [selection, setSelection] = useState<TextSelection | null>(null);
   const [menu, setMenu] = useState<{ id: string; rect: Rect; stacked?: string[] } | null>(null);
   const [remote, setRemote] = useState<Progress>();
+  // Looking at a highlight, bookmark or search match: the reader's place (`back`) stays the saved
+  // one until they read on from where they looked, choose to stay there, or go back.
+  const look = useRef<{ back: Position; to: string; arrived: boolean } | null>(null);
+  const [back, setBack] = useState<Position>();
   const [panel, setPanel] = useState(false);
   const [showDisplay, setShowDisplay] = useState(false);
   // The header and progress bar float over the page; tapping the page shows or hides them.
@@ -150,6 +158,8 @@ export function Reader({ book, at, onClose }: Props) {
         if (cancelled) return;
         setInitial(progress);
         saved.current = progress?.location;
+        // A highlight picked in the library is a look too, if the book has a place to go back to.
+        if (at && progress) setBack((look.current = { back: progress, to: at, arrived: false }).back);
         setBookmarks(marks);
         setHighlights(colored);
         setData(bytes);
@@ -280,7 +290,7 @@ export function Reader({ book, at, onClose }: Props) {
     if (!hit) return;
     setActive(index);
     setSearchOpen(false);
-    viewer.current?.goTo(hit.location, true);
+    jump(hit.location, "look");
   };
   const step = (by: 1 | -1) => hits.length && showHit((active + by + hits.length) % hits.length);
   const stepping = useRef<{ active: number; step: typeof step }>({ active, step });
@@ -332,6 +342,16 @@ export function Reader({ book, at, onClose }: Props) {
       opened.current = true;
       // Opening at a highlight from the library is the reader going there.
       const save = moved || (opening && !!at);
+      const visit = look.current;
+      if (visit) {
+        const apart = viewer.current?.apart(visit.to, p.location) ?? null;
+        // Reports from the way there don't count, only reading on from the place itself.
+        if (!visit.arrived) visit.arrived = apart !== null && apart < READ_ON;
+        else if (moved && apart !== null && apart >= READ_ON) {
+          look.current = null;
+          setBack(undefined);
+        }
+      }
       if (!save) return;
       // Reading has started: get the controls out of the way. (A PDF's first page counts
       // as a saved position, so the very first report is only the book opening.)
@@ -339,6 +359,7 @@ export function Reader({ book, at, onClose }: Props) {
       // scrolling after the tap that showed them.
       // Zooming re-anchors the scroll too; that isn't reading either.
       if (!opening && Date.now() - Math.max(shownAt.current, zoomedAt.current) > 2000) setChrome(false);
+      if (look.current) return;
       saved.current = p.location;
       setRemote(undefined);
       api.setProgress(book.id, p).catch((e) => setError(message(e)));
@@ -423,13 +444,35 @@ export function Reader({ book, at, onClose }: Props) {
     }
   };
 
-  const jump = (location: string, save = true) => {
-    if (!save) {
+  const jump = (location: string, how: Jump = "read") => {
+    if (how === "look") {
+      // However many places the reader looks at, the way back is to where they were reading.
+      const here = position ?? initial;
+      if (look.current) look.current = { ...look.current, to: location, arrived: false };
+      else if (here) setBack((look.current = { back: { ...here, location: saved.current ?? here.location }, to: location, arrived: false }).back);
+    } else {
+      look.current = null;
+      setBack(undefined);
+    }
+    if (how === "follow") {
       saved.current = location;
       setRemote(undefined);
     }
-    viewer.current?.goTo(location, save);
+    viewer.current?.goTo(location, how);
     setPanel(false);
+  };
+  const goBack = () => {
+    const place = look.current?.back;
+    look.current = null;
+    setBack(undefined);
+    if (place) viewer.current?.goTo(place.location, "look");
+  };
+  const stay = () => {
+    look.current = null;
+    setBack(undefined);
+    if (!position) return;
+    saved.current = position.location;
+    api.setProgress(book.id, position).catch((e) => setError(message(e)));
   };
 
   const View = book.format === "pdf" ? PdfView : EpubView;
@@ -539,11 +582,30 @@ export function Reader({ book, at, onClose }: Props) {
           role="status"
         >
           <span className="min-w-48 flex-1">Another device is at {remote.label}.</span>
-          <Button size="sm" onClick={() => jump(remote.location, false)}>
+          <Button size="sm" onClick={() => jump(remote.location, "follow")}>
             Go there
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setRemote(undefined)}>
             Stay
+          </Button>
+        </div>
+      )}
+
+      {back && !remote && (
+        <div
+          role="toolbar"
+          aria-label="Your place"
+          className={cn(
+            "absolute left-1/2 z-30 flex -translate-x-1/2 items-center gap-0.5 rounded-full border bg-popover/95 p-1 text-sm shadow-lg backdrop-blur transition-[top] duration-200",
+            chrome ? "top-[calc(env(safe-area-inset-top)+3.75rem)]" : "top-[calc(env(safe-area-inset-top)+0.5rem)]",
+          )}
+        >
+          <Button variant="ghost" size="sm" className="rounded-full" onClick={goBack}>
+            <Undo2 />
+            Back to {pdf ? `page ${Number.parseInt(back.location, 10) || 1}` : `${Math.round(back.fraction * 100)}%`}
+          </Button>
+          <Button variant="ghost" size="sm" className="rounded-full text-muted-foreground" onClick={stay}>
+            Stay here
           </Button>
         </div>
       )}
@@ -686,7 +748,7 @@ export function Reader({ book, at, onClose }: Props) {
         place={place}
         bookmarks={bookmarks}
         highlights={highlights}
-        onJump={(location) => jump(location)}
+        onJump={jump}
         onRemoveBookmark={(id) => void attempt(() => api.removeBookmark(id).then(() => api.bookmarks(book.id)).then(setBookmarks))}
         onRecolor={recolor}
         onRemoveHighlight={removeHighlight}

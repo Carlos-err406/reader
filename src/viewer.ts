@@ -86,13 +86,21 @@ export function isPageTap(event: MouseEvent): boolean {
  */
 export const GLIDE = 0.65;
 
+/**
+ * How a jump counts. "read": the reader moves there, and it's saved. "follow": showing where
+ * another device is, unsaved so its exact position is kept, its words marked. "look": visiting a
+ * highlight, bookmark or search match without leaving one's place.
+ */
+export type Jump = "read" | "follow" | "look";
+
 export interface ViewerHandle {
   next(): void;
   prev(): void;
   /** The volume buttons' turn: in the scroll layout a smooth `GLIDE` of a screen; a page otherwise. */
   glide(forward: boolean): void;
-  /** `save: false` when following another device, so its exact position is kept. */
-  goTo(location: string, save?: boolean): void;
+  goTo(location: string, how?: Jump): void;
+  /** About how many screens (EPUB) or pages (PDF) apart two places are; null until that's known. */
+  apart(a: string, b: string): number | null;
   /** Searches the whole book, reporting matches as it goes, until done or aborted. */
   search(query: string, onFound: OnFound, signal: AbortSignal): Promise<void>;
 }

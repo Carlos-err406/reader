@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Bookmark as BookmarkIcon, Highlighter, ListTree, Trash2 } from "lucide-react";
-import { currentEntry, type TocEntry } from "./viewer";
+import { currentEntry, type Jump, type TocEntry } from "./viewer";
 import { cn } from "@/lib/utils";
 import type { Bookmark, Highlight, HighlightColor } from "./api";
 import { Panel } from "@/components/Panel";
@@ -20,7 +20,8 @@ interface Props {
   place: number;
   bookmarks: Bookmark[];
   highlights: Highlight[];
-  onJump: (location: string) => void;
+  /** Contents entries are read from; highlights and bookmarks are looked at (see `Jump`). */
+  onJump: (location: string, how: Jump) => void;
   onRemoveBookmark: (id: string) => void;
   onRecolor: (id: string, color: HighlightColor) => void;
   onRemoveHighlight: (id: string) => void;
@@ -82,7 +83,7 @@ export function MarksPanel(props: Props) {
                 <button
                   type="button"
                   aria-current={i === current ? "true" : undefined}
-                  onClick={() => props.onJump(e.location)}
+                  onClick={() => props.onJump(e.location, "read")}
                   className={cn(
                     "flex w-full items-baseline gap-3 rounded-lg py-2 pr-2 text-left outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring",
                     i === current && "bg-accent",
@@ -117,7 +118,7 @@ export function MarksPanel(props: Props) {
                 <HighlightItem
                   key={h.id}
                   highlight={h}
-                  onOpen={() => props.onJump(h.location)}
+                  onOpen={() => props.onJump(h.location, "look")}
                   onRecolor={(c) => props.onRecolor(h.id, c)}
                   onRemove={() => props.onRemoveHighlight(h.id)}
                   onCopy={() => props.onCopy(h.text)}
@@ -134,7 +135,7 @@ export function MarksPanel(props: Props) {
         <ul className="-mx-2 grid">
           {bookmarks.map((b) => (
             <li key={b.id} className="flex items-center gap-1">
-              <Button variant="ghost" className="min-w-0 flex-1 justify-start font-normal" onClick={() => props.onJump(b.location)}>
+              <Button variant="ghost" className="min-w-0 flex-1 justify-start font-normal" onClick={() => props.onJump(b.location, "look")}>
                 <BookmarkIcon className="text-muted-foreground" />
                 <span className="truncate">{b.label}</span>
               </Button>

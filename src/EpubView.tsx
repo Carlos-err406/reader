@@ -980,17 +980,31 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
           if (total >= MAX_HITS) return onFound([], 1);
         }
       },
-      // Following another device: show where it is, like opening at a synced spot.
-      goTo: (location, save = true) =>
+      goTo: (location, how = "read") => {
+        const save = how === "read";
         navigate(save, async (v) => {
           const shown = v.display(location);
           if (!location.startsWith("epubcfi(")) return;
           // Scrolling, epub.js's display() can stay pending until the next one (its follow-up
           // work queues behind itself), so go on once the spot's chapter is on the page.
           await Promise.race([shown, onPage(v, location)]);
-          if (!save) mark(v, location);
+          // Following another device: show where it is, like opening at a synced spot.
+          if (how === "follow") mark(v, location);
           await place.current(v, location, save);
-        }),
+        });
+      },
+      // Locations are about 1200 characters: roughly a screen.
+      apart: (a, b) => {
+        const locations = bookNow.current?.locations;
+        const total = locations?.length() ?? 0;
+        if (!locations || !total) return null;
+        try {
+          const [x, y] = [locations.percentageFromCfi(a), locations.percentageFromCfi(b)];
+          return x >= 0 && y >= 0 ? Math.abs(x - y) * total : null;
+        } catch {
+          return null;
+        }
+      },
     };
   });
 
