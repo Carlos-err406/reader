@@ -9,16 +9,16 @@ interface Props {
   /** The books being filed; the sheet is open while there are any. */
   books: Book[];
   onClose: () => void;
-  collections: Collection[];
+  tags: Collection[];
   /** After any change, so the library shows it. */
   onChanged: () => void;
 }
 
 /**
- * Puts books in or out of collections, and makes new ones on the spot. With several books, a
- * collection holding only some of them shows a dash; tapping it adds the rest.
+ * Tags books or untags them, and makes new tags on the spot. With several books, a tag on only
+ * some of them shows a dash; tapping it tags the rest. (Tags are stored as collections.)
  */
-export function CollectionsSheet({ books, onClose, collections, onChanged }: Props) {
+export function TagsSheet({ books, onClose, tags, onChanged }: Props) {
   const [name, setName] = useState("");
   const [error, setError] = useState<string>();
   const run = async (work: () => Promise<unknown>) => {
@@ -46,11 +46,11 @@ export function CollectionsSheet({ books, onClose, collections, onChanged }: Pro
   const subject = books.length === 1 ? books[0]!.title : `${books.length} books`;
 
   return (
-    <Panel open={books.length > 0} onOpenChange={(open) => !open && onClose()} title="Collections" description={`Collections for ${subject}`}>
+    <Panel open={books.length > 0} onOpenChange={(open) => !open && onClose()} title="Tags" description={`Tags for ${subject}`}>
       {books.length > 0 && <p className="truncate text-sm text-muted-foreground">{subject}</p>}
-      {collections.length > 0 ? (
-        <ul className="-mx-2 grid gap-0.5" aria-label="Collections">
-          {collections.map((c) => {
+      {tags.length > 0 ? (
+        <ul className="-mx-2 grid gap-0.5" aria-label="Tags">
+          {tags.map((c) => {
             const count = inside(c);
             const state = count === 0 ? false : count === books.length ? true : "mixed";
             return (
@@ -81,7 +81,7 @@ export function CollectionsSheet({ books, onClose, collections, onChanged }: Pro
       ) : (
         <p className="text-sm text-muted-foreground">
           <Tag className="mr-1 inline size-4 align-text-bottom" />
-          Collections group books however you like: a series, a course, books to lend. A book can be in several.
+          Tags group books however you like: a series, a course, books to lend. A book can have several, and the library can show the books with all the tags you pick.
         </p>
       )}
       <form
@@ -95,8 +95,8 @@ export function CollectionsSheet({ books, onClose, collections, onChanged }: Pro
           value={name}
           maxLength={80}
           onChange={(e) => setName(e.target.value)}
-          placeholder="New collection"
-          aria-label="New collection name"
+          placeholder="New tag"
+          aria-label="New tag name"
           className="h-9 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
         />
         <Button type="submit" size="sm" className="h-9" disabled={!name.trim()}>

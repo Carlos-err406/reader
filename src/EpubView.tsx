@@ -1,7 +1,8 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import ePub, { EpubCFI, type Book, type Contents, type NavItem, type Rendition } from "epubjs";
 import type { Highlight } from "./api";
-import { byAge, cfiRepairs, highlightCss, highlightName, overlaps, SEARCH_MARK, SWATCHES, textBounded, type Rect, type TextSelection } from "./highlights";
+import { ALOUD_MARK, byAge, cfiRepairs, highlightCss, highlightName, overlaps, SEARCH_MARK, SWATCHES, textBounded, type Rect, type TextSelection } from "./highlights";
+import { sentences, spoken, type Sentence } from "./sentences";
 import { excerpt, foldQuery, matches, MAX_HITS, type OnFound, type SearchHit } from "./search";
 import { epubLabel } from "./format";
 import { GLIDE, isPageTap, type TocEntry, type ViewerHandle, type ViewerProps } from "./viewer";
@@ -305,6 +306,19 @@ function markFound(contents: Contents, hit: SearchHit | null) {
   }
 }
 
+/** Marks the sentence being read aloud, in the chapter it's in (and clears it elsewhere). */
+function markAloud(contents: Contents, cfi: string | null) {
+  const win = contents.document.defaultView as HighlightWindow | null;
+  const registry = win?.CSS?.highlights;
+  if (!registry || !win?.Highlight) return;
+  registry.delete(ALOUD_MARK);
+  if (!cfi || sectionOf(cfi) !== contents.sectionIndex) return;
+  try {
+    const range = contents.range(cfi);
+    if (range && !range.collapsed) registry.set(ALOUD_MARK, new win.Highlight(range));
+  } catch {}
+}
+
 /** Blocks whose text reads as separate from the next: a match or excerpt doesn't run across them. */
 const BLOCKS = "p, div, h1, h2, h3, h4, h5, h6, li, blockquote, td, th, pre, section, article, figcaption, dt, dd, tr";
 
@@ -350,6 +364,51 @@ function searchSection(doc: Document, query: string, cfiBase: string, index: num
     });
   }
   return hits;
+}
+
+/** A sentence to read aloud, and where it ends, to find the one a page starts inside. */
+type Aloud = Sentence & { end: string };
+
+/**
+ * One chapter's sentences, from its own document. Each block (a paragraph, a heading) ends its
+ * sentences, so a heading isn't read into the paragraph after it.
+ */
+function sectionSentences(doc: Document, cfiBase: string, lang?: string): Aloud[] {
+  const body = doc.body ?? doc.documentElement;
+  const nodes: Text[] = [];
+  const starts: number[] = [];
+  let text = "";
+  let block: Element | null | undefined;
+  const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode() as Text | null; n; n = walker.nextNode() as Text | null) {
+    const own = n.parentElement?.closest(BLOCKS) ?? null;
+    if (block !== undefined && own !== block) text += "\n";
+    block = own;
+    nodes.push(n);
+    starts.push(text.length);
+    // Line breaks in the source are only layout; blocks make the breaks.
+    text += n.data.replace(/[\n\r\u2028\u2029]/g, " ");
+  }
+  const at = (pos: number): [Text, number] => {
+    let lo = 0;
+    let hi = nodes.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid]! <= pos) lo = mid;
+      else hi = mid - 1;
+    }
+    return [nodes[lo]!, Math.min(Math.max(0, pos - starts[lo]!), nodes[lo]!.length)];
+  };
+  return sentences(text, lang).map(([start, end]) => {
+    const range = doc.createRange();
+    const [startNode, startOffset] = at(start);
+    const [endNode, endOffset] = at(end - 1);
+    range.setStart(startNode, startOffset);
+    range.setEnd(endNode, Math.min(endOffset + 1, endNode.length));
+    const location = new EpubCFI(range, cfiBase).toString();
+    range.collapse(false);
+    return { text: spoken(text.slice(start, end)), location, end: new EpubCFI(range, cfiBase).toString() };
+  });
 }
 
 /** The highlights painted over a range, and one range covering it and them. */
@@ -430,7 +489,11 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
   const opened = useRef(false);
   const clearMark = useRef<() => void>(() => {});
   // Puts a spot back in place once its chapter has finished laying out (set up with the book).
-  const place = useRef<(view: Rendition, cfi: string, save: boolean) => Promise<void>>(() => Promise.resolve());
+  // `gentle`: only move if the spot is off screen (reading aloud follows the text, it doesn't
+  // re-centre every sentence).
+  const place = useRef<(view: Rendition, cfi: string, save: boolean, gentle?: boolean) => Promise<void>>(() => Promise.resolve());
+  // The sentence being read aloud.
+  const aloudNow = useRef<string | null>(null);
   const mark = (view: Rendition, cfi: string) => {
     clearMark.current();
     clearMark.current = markResume(view, cfi);
@@ -665,7 +728,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
     // from elsewhere ended up a page early, or far down the screen. Once the chapter settles, put
     // the spot back. Highlights and search matches (ranges) go a quarter of the way down, clear of
     // the header; other spots (bookmarks, a synced page) at the top, as epub.js puts them.
-    place.current = async (view, cfi, save) => {
+    place.current = async (view, cfi, save, gentle = false) => {
       const asked = Date.now();
       await settled(view);
       // The reader moved on in the meantime, or the book was reopened.
@@ -684,6 +747,9 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
         forced.current = save;
         await view.display(found.cfi);
       } else {
+        const top = r.top + frame.top;
+        const bottom = (range.getBoundingClientRect().bottom || r.bottom) + frame.top;
+        if (gentle && top >= area.top && bottom <= area.bottom - area.height / 6) return;
         const want = cfi.includes(",") ? b.clientHeight / 4 : 0;
         const off = r.top + frame.top - area.top - want;
         if (Math.abs(off) < 8) return;
@@ -732,6 +798,7 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
         applyLook(contents.document, look.current);
         paint(contents, marks.current, darkPage.current);
         markFound(contents, foundNow.current);
+        markAloud(contents, aloudNow.current);
         // A selection that collapses (tapped away, highlighted, copied) takes its toolbar with it.
         contents.document.addEventListener("selectionchange", () => {
           if (!selection || selection.range.startContainer.ownerDocument !== contents.document) return;
@@ -994,6 +1061,56 @@ export const EpubView = forwardRef<ViewerHandle, ViewerProps>(function EpubView(
         });
       },
       length: () => bookNow.current?.locations.length() || null,
+      language: () => bookNow.current?.packaging?.metadata?.language || null,
+      // Each chapter is read from the book's archive, as for search, so the sentences' addresses
+      // are the same as in the chapter shown.
+      sentences: async (after) => {
+        const book = bookNow.current;
+        if (!book) return null;
+        const spine = book.spine as unknown as { length: number; get: (i: number) => { href: string; cfiBase: string } | null };
+        let from = after ? null : (shown.current ?? null);
+        let index = after ? sectionOf(after) + 1 : from ? Math.max(0, sectionOf(from)) : 0;
+        const lang = book.packaging?.metadata?.language || undefined;
+        const cfi = new EpubCFI();
+        for (; index < spine.length; index++) {
+          const section = spine.get(index);
+          let list: Aloud[] = [];
+          if (section) {
+            try {
+              const doc = (await book.load(section.href)) as unknown as Document;
+              stripActiveContent(doc);
+              list = sectionSentences(doc, section.cfiBase, lang);
+            } catch {
+              // An unreadable chapter: nothing to read in it.
+            }
+          }
+          if (from) {
+            const start = from;
+            let first = list.findIndex((s) => cfi.compare(s.location, start) >= 0);
+            if (first < 0) first = list.length;
+            // The page can start inside a sentence: that one is read from its start.
+            if (first > 0 && cfi.compare(list[first - 1]!.end, start) > 0) first--;
+            list = list.slice(first);
+            from = null;
+          }
+          if (list.length) return list.map(({ text, location }) => ({ text, location }));
+        }
+        return null;
+      },
+      speak: (location) => {
+        aloudNow.current = location;
+        const view = rendition.current;
+        (view?.getContents() as unknown as Contents[] | undefined)?.forEach((c) => markAloud(c, location));
+        if (!view || !location) return;
+        // Reading on into a chapter that isn't on the page: go there, as turning to it would.
+        if (!inView(view, location)) {
+          return navigate(true, async (v) => {
+            await Promise.race([v.display(location), onPage(v, location)]);
+            await place.current(v, location, true, true);
+          });
+        }
+        void place.current(view, location, true, true);
+      },
       // Locations are about 1200 characters: roughly a screen.
       apart: (a, b) => {
         const locations = bookNow.current?.locations;

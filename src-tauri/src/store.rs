@@ -3,7 +3,7 @@
 use crate::error::{bail, Result};
 use crate::sync::model::{
     canonical, cover_image, parse_member_id, validate_record, BookValue, BookmarkValue, CollectionValue, CoverValue,
-    HighlightValue, Kind, PaceValue, ProgressValue, Record, Revision,
+    HighlightValue, Kind, PaceValue, ProgressValue, Record, Revision, TimeValue,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
@@ -364,7 +364,6 @@ impl Store {
             .collect()
     }
 
-    /// One book's highlights, or every book's, in reading order. A deleted book's are left out.
     /// Every device's reading speed, by device.
     pub fn paces(&self) -> Result<Vec<(String, PaceValue)>> {
         let conn = self.lock();
@@ -375,6 +374,23 @@ impl Store {
         rows.into_iter().map(|(id, value)| Ok((id, serde_json::from_str(&value)?))).collect()
     }
 
+    /// Time spent reading a book, by device.
+    pub fn times(&self, book: &str) -> Result<Vec<(String, TimeValue)>> {
+        let conn = self.lock();
+        let rows = conn
+            .prepare("SELECT id, value FROM records WHERE kind='time' AND value IS NOT NULL AND id LIKE '%:' || ?1")?
+            .query_map([book], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .filter_map(|(id, value)| match parse_member_id(&id)? {
+                (device, b) if b == book => Some((device.to_owned(), value)),
+                _ => None,
+            })
+            .map(|(device, value)| Ok((device, serde_json::from_str(&value)?)))
+            .collect()
+    }
+
+    /// One book's highlights, or every book's, in reading order. A deleted book's are left out.
     pub fn highlights(&self, book: Option<&str>) -> Result<Vec<Highlight>> {
         let conn = self.lock();
         let rows = conn

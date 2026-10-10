@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { add, amount, duration, follow, rate, timeLeft, timeLeftLine, total, type Stretch } from "./pace";
+import { add, amount, duration, follow, rate, spent, timeLeft, timeLeftLine, timeReadLine, total, type Stretch } from "./pace";
 import type { TocEntry } from "./viewer";
 
 const MIN = 60_000;
@@ -60,6 +60,20 @@ describe("stretches of reading", () => {
     const back = follow(s, 0.1, 2 * MIN, size, true);
     expect(back.ended).toBeUndefined();
     expect(back.stretch.to).toBe(0.1005);
+  });
+});
+
+describe("time read", () => {
+  it("counts the time between moments the reader was there, but not long pauses", () => {
+    expect(spent(0, 2 * MIN)).toBe(2);
+    expect(spent(0, 5 * MIN)).toBe(5);
+    expect(spent(0, 6 * MIN)).toBe(0);
+    expect(spent(MIN, 0)).toBe(0);
+  });
+
+  it("shows once there's a minute of it", () => {
+    expect(timeReadLine(0.5)).toBeNull();
+    expect(timeReadLine(80)).toBe("1 h 20 min read");
   });
 });
 

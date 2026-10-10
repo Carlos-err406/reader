@@ -4,7 +4,8 @@ use crate::store::{now_ms, Book, Bookmark, Collection, Highlight, Store};
 use crate::sync::model::{
     is_sha256, validate_book, validate_bookmark, validate_highlight, validate_progress, BookValue,
     BookmarkValue, Color, CollectionValue, CoverValue, Format, HighlightValue, Kind, MarkedValue, PaceValue, ProgressValue,
-    MAX_BOOK_BYTES, MAX_COLLECTION_NAME, MAX_COVER_IMAGE, MAX_HIGHLIGHT_TEXT, is_uuid, member_id,
+    MAX_BOOK_BYTES, MAX_COLLECTION_NAME, MAX_COVER_IMAGE, MAX_HIGHLIGHT_TEXT, is_uuid, member_id, time_id,
+    validate_time, TimeValue,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -102,6 +103,7 @@ pub fn remove(store: &Store, id: &str) -> Result<()> {
             edits.push((kind, id.to_owned(), None));
         }
     }
+    edits.extend(store.times(id)?.into_iter().map(|(device, _)| (Kind::Time, time_id(&device, id), None)));
     for (collection, book) in store.members()? {
         if book == id {
             edits.push((Kind::Member, member_id(&collection, &book), None));
@@ -201,6 +203,28 @@ pub fn set_pace(store: &Store, pace: PaceValue) -> Result<()> {
     store.stamp(vec![(Kind::Pace, store.replica()?, Some(serde_json::to_value(pace)?))])
 }
 
+/// Minutes spent reading a book, on every device.
+pub fn time_read(store: &Store, book: &str) -> Result<f64> {
+    Ok(store.times(book)?.iter().map(|(_, t)| t.minutes).sum())
+}
+
+/// Adds reading time to this device's count for a book, and returns every device's together.
+pub fn add_time_read(store: &Store, book: &str, minutes: f64) -> Result<f64> {
+    require_book(store, book)?;
+    if !(minutes.is_finite() && minutes > 0.0 && minutes <= 24.0 * 60.0) {
+        bail!("Invalid reading time");
+    }
+    let id = time_id(&store.replica()?, book);
+    let before = match store.record(Kind::Time, &id)?.and_then(|r| r.value) {
+        Some(value) => serde_json::from_value::<TimeValue>(value)?.minutes,
+        None => 0.0,
+    };
+    let value = TimeValue { minutes: before + minutes, at: now_ms() };
+    validate_time(&value)?;
+    store.stamp(vec![(Kind::Time, id, Some(serde_json::to_value(value)?))])?;
+    time_read(store, book)
+}
+
 /// Stars or unstars a book (`Kind::Favorite`), or marks it finished or not (`Kind::Finished`).
 /// Returns whether anything changed.
 pub fn set_mark(store: &Store, kind: Kind, book: &str, on: bool) -> Result<bool> {
@@ -239,7 +263,7 @@ pub fn remove_bookmark(store: &Store, id: &str) -> Result<()> {
 fn collection_name(name: &str) -> Result<String> {
     let name = clip(&name.split_whitespace().collect::<Vec<_>>().join(" "), MAX_COLLECTION_NAME);
     if name.is_empty() {
-        bail!("Give the collection a name");
+        bail!("Give the tag a name");
     }
     Ok(name)
 }
@@ -262,11 +286,11 @@ pub fn create_collection(store: &Store, name: &str) -> Result<Collection> {
 
 fn collection(store: &Store, id: &str) -> Result<CollectionValue> {
     if !is_uuid(id) {
-        bail!("Unknown collection");
+        bail!("Unknown tag");
     }
     match store.record(Kind::Collection, id)?.and_then(|r| r.value) {
         Some(value) => Ok(serde_json::from_value(value)?),
-        None => bail!("This collection was deleted"),
+        None => bail!("This tag was deleted"),
     }
 }
 
@@ -274,7 +298,7 @@ pub fn rename_collection(store: &Store, id: &str, name: &str) -> Result<()> {
     let mut value = collection(store, id)?;
     let name = collection_name(name)?;
     if store.collections()?.iter().any(|c| c.id != id && same_name(&c.name, &name)) {
-        bail!("There's already a collection called “{name}”");
+        bail!("There's already a tag called “{name}”");
     }
     if value.name != name {
         value.name = name;
@@ -439,6 +463,31 @@ mod tests {
         assert_eq!(paces(&phone).unwrap().mine.unwrap().epub, reading(40.0, 25.0));
         assert!(set_pace(&phone, PaceValue { epub: reading(f64::NAN, 1.0), pdf: None, at: 0 }).is_err());
         assert!(set_pace(&phone, PaceValue { epub: reading(-1.0, 1.0), pdf: None, at: 0 }).is_err());
+    }
+
+    #[test]
+    fn each_device_counts_its_own_time_and_it_leaves_with_the_book() {
+        let phone = Store::memory().unwrap();
+        let laptop = Store::memory().unwrap();
+        let meta = || ImportMeta { title: "E".into(), author: None };
+        let book = import(&phone, &epub(), meta()).unwrap().id;
+        import(&laptop, &epub(), meta()).unwrap();
+        assert_eq!(add_time_read(&phone, &book, 10.0).unwrap(), 10.0);
+        assert_eq!(add_time_read(&phone, &book, 5.0).unwrap(), 15.0);
+        add_time_read(&laptop, &book, 20.0).unwrap();
+        // Both reach each other, in both directions, and neither overwrites the other.
+        phone.apply(&laptop.records().unwrap()).unwrap();
+        laptop.apply(&phone.records().unwrap()).unwrap();
+        assert_eq!(time_read(&phone, &book).unwrap(), 35.0);
+        assert_eq!(time_read(&laptop, &book).unwrap(), 35.0);
+        assert!(add_time_read(&phone, &book, f64::NAN).is_err());
+        assert!(add_time_read(&phone, &book, -1.0).is_err());
+        assert!(add_time_read(&phone, &"0".repeat(64), 1.0).is_err());
+        // Removing the book takes every device's time with it.
+        remove(&phone, &book).unwrap();
+        assert_eq!(time_read(&phone, &book).unwrap(), 0.0);
+        laptop.apply(&phone.records().unwrap()).unwrap();
+        assert_eq!(time_read(&laptop, &book).unwrap(), 0.0);
     }
 
     #[test]

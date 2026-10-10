@@ -15,7 +15,7 @@ import { EpubView, sectionOf } from "./EpubView";
 import { PdfView } from "./PdfView";
 import type { Jump, TocEntry, ViewerHandle } from "./viewer";
 import { DisplaySheet } from "./DisplaySheet";
-import { pageCss, SIZES, stepSize } from "./display";
+import { pageCss, stepSize } from "./display";
 import { clampZoom, stepZoom } from "./pinch";
 import { useDisplay } from "./useDisplay";
 import type { Rect, TextSelection } from "./highlights";
@@ -24,13 +24,16 @@ import { MarksPanel } from "./MarksPanel";
 import { SearchPanel } from "./SearchPanel";
 import type { SearchHit } from "./search";
 import { currentEntry } from "./viewer";
-import { add, amount, follow, rate, timeLeft, timeLeftLine, total, type Stretch } from "./pace";
+import { ReadAloudBar, useReadAloud, VoicesSheet } from "./ReadAloud";
+import { add, amount, follow, rate, spent, timeLeft, timeLeftLine, timeReadLine, total, type Stretch } from "./pace";
 import {
   Bookmark as BookmarkIcon,
   BookmarkCheck,
   ChevronDown,
   ChevronLeft,
   ChevronUp,
+  Ellipsis,
+  Headphones,
   Search,
   X,
   List,
@@ -39,9 +42,8 @@ import {
   Star,
   Type,
   Undo2,
-  ZoomIn,
-  ZoomOut,
 } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Channel } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
@@ -59,6 +61,9 @@ const desktop = !/android/i.test(navigator.userAgent);
 
 /** Reading on this many screens (EPUB) or pages (PDF) from a place looked at makes it the reader's. */
 const READ_ON = 3;
+
+/** Reading time is saved once this many minutes of it pile up, and whenever the app steps away. */
+const SAVE_READ_EVERY = 5;
 
 /** How long the screen stays on without the reader touching the book. */
 const AWAKE_FOR = 10 * 60 * 1000;
@@ -108,12 +113,73 @@ export function Reader({ book, at, onClose }: Props) {
     },
     [kind],
   );
-  useEffect(
-    () => () => {
-      if (stretch.current) finish(stretch.current.now, stretch.current.size);
+  // Time spent reading this book: every device's, synced, plus this device's not saved yet.
+  const [timeRead, setTimeRead] = useState(0);
+  useEffect(() => void api.timeRead(book.id).then(setTimeRead, () => {}), [book.id]);
+  const unsaved = useRef(0);
+  const saveTimeRead = useCallback(() => {
+    const minutes = unsaved.current;
+    if (!minutes) return;
+    unsaved.current = 0;
+    api.addTimeRead(book.id, minutes).then(setTimeRead, () => (unsaved.current += minutes));
+  }, [book.id]);
+  // When the reader was last there (a page turn, a tap), while the app is in front; null while
+  // it isn't.
+  const since = useRef<number | null>(null);
+  const there = useCallback(
+    (now: number) => {
+      if (since.current === null) return;
+      unsaved.current += spent(since.current, now);
+      since.current = now;
+      if (unsaved.current >= SAVE_READ_EVERY) saveTimeRead();
     },
-    [finish],
+    [saveTimeRead],
   );
+  // Only time with the app in front counts, for the time read and the reading speed: in the
+  // background, behind another window or with the screen off, the reader isn't reading.
+  const inFront = useRef(true);
+  const latest = useRef<Position | null>(null);
+  useEffect(() => {
+    const front = () => document.visibilityState === "visible" && (!desktop || document.hasFocus());
+    const start = () => {
+      const now = Date.now();
+      since.current = now;
+      // Reading picks up from here, not from before the app stepped away.
+      const size = viewer.current?.length();
+      if (size && latest.current) stretch.current = { now: follow(null, latest.current.fraction, now, size, false).stretch, size };
+    };
+    const stop = () => {
+      there(Date.now());
+      since.current = null;
+      saveTimeRead();
+      if (stretch.current) finish(stretch.current.now, stretch.current.size);
+      stretch.current = null;
+    };
+    inFront.current = front();
+    if (inFront.current) since.current = Date.now();
+    const check = () => {
+      if (front() === inFront.current) return;
+      inFront.current = !inFront.current;
+      if (inFront.current) start();
+      else stop();
+    };
+    // Focus moving into a book's page (an iframe) blurs the window too: look once it has landed.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const blur = () => {
+      clearTimeout(timer);
+      timer = setTimeout(check);
+    };
+    document.addEventListener("visibilitychange", check);
+    window.addEventListener("focus", check);
+    window.addEventListener("blur", blur);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", check);
+      window.removeEventListener("focus", check);
+      window.removeEventListener("blur", blur);
+      if (inFront.current) stop();
+    };
+  }, [there, saveTimeRead, finish]);
   const [panel, setPanel] = useState(false);
   const [showDisplay, setShowDisplay] = useState(false);
   // The header and progress bar float over the page; tapping the page shows or hides them.
@@ -175,6 +241,22 @@ export function Reader({ book, at, onClose }: Props) {
   const cssFor = useCallback((size: number) => pageCss({ ...display, size }, palette), [display, palette]);
   const css = pageCss(display, palette);
   const viewer = useRef<ViewerHandle>(null);
+  // Reading aloud: each sentence keeps the screen on, as touching the book would.
+  const aloud = useReadAloud(viewer, { onSentence: () => stir.current(), onError: setError });
+  const listening = aloud.state !== "off";
+  const listeningNow = useRef(listening);
+  listeningNow.current = listening;
+  const [showVoices, setShowVoices] = useState(false);
+  // The footer's height, to keep the read-aloud controls above it.
+  const footer = useRef<HTMLElement>(null);
+  const [footerHeight, setFooterHeight] = useState(0);
+  useEffect(() => {
+    const el = footer.current;
+    if (!el) return;
+    const watch = new ResizeObserver(() => setFooterHeight(el.offsetHeight));
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, []);
   // The position this device last saved (or opened at). Page starts shown on screen can
   // differ from it without the reader having moved.
   const saved = useRef<string | undefined>(undefined);
@@ -217,6 +299,7 @@ export function Reader({ book, at, onClose }: Props) {
       }
       if (changed.some((c) => c.kind === "highlight")) void api.highlights(book.id).then(setHighlights);
       if (changed.some((c) => c.kind === "pace")) void api.paces().then(setPaces);
+      if (changed.some((c) => c.kind === "time" && c.id.endsWith(`:${book.id}`))) void api.timeRead(book.id).then(setTimeRead);
     });
     return () => void unlisten.then((f) => f());
   }, [book.id, onClose]);
@@ -251,16 +334,17 @@ export function Reader({ book, at, onClose }: Props) {
     };
   }, [display.keepAwake]);
 
-  // Android: the volume buttons turn pages, down forward and up back, while the book is open.
+  // Android: the volume buttons turn pages, down forward and up back, while the book is open
+  // (but set the volume while it's read aloud).
   useEffect(() => {
-    if (desktop || !display.volumeKeys) return;
+    if (desktop || !display.volumeKeys || listening) return;
     const keys = new Channel<{ turn: "next" | "previous" }>((e) => {
       stir.current();
       viewer.current?.glide(e.turn === "next");
     });
     void api.volumeKeys(true, keys).catch(() => {});
     return () => void api.volumeKeys(false, keys).catch(() => {});
-  }, [display.volumeKeys]);
+  }, [display.volumeKeys, listening]);
 
   // Android's status and navigation bars follow the reader's own controls.
   useEffect(() => {
@@ -370,9 +454,15 @@ export function Reader({ book, at, onClose }: Props) {
       stir.current();
       const opening = !opened.current;
       opened.current = true;
-      // How far the reader gets in how long, from the moves they make themselves.
+      latest.current = p;
+      there(Date.now());
+      // How far the reader gets in how long, from the moves they make themselves. Listening
+      // isn't reading: its page turns follow the voice.
       const size = viewer.current?.length();
-      if (size) {
+      if (listeningNow.current) {
+        if (stretch.current) finish(stretch.current.now, stretch.current.size);
+        stretch.current = null;
+      } else if (size && inFront.current) {
         const next = follow(stretch.current?.now ?? null, p.fraction, Date.now(), size, moved);
         if (next.ended && stretch.current) finish(next.ended, stretch.current.size);
         stretch.current = { now: next.stretch, size };
@@ -401,18 +491,19 @@ export function Reader({ book, at, onClose }: Props) {
       setRemote(undefined);
       api.setProgress(book.id, p).catch((e) => setError(message(e)));
     },
-    [book.id, at, finish],
+    [book.id, at, finish, there],
   );
 
   const onError = useCallback((e: unknown) => setError(message(e)), []);
   const onTap = useCallback(() => {
     stir.current();
+    there(Date.now());
     if (floating.current) {
       setMenu(null);
       return;
     }
     setChrome((shown) => !shown);
-  }, []);
+  }, [there]);
   const onSelect = useCallback((s: TextSelection | null) => {
     setSelection(s);
     if (s) setMenu(null);
@@ -475,6 +566,8 @@ export function Reader({ book, at, onClose }: Props) {
     try {
       if (marked) await api.removeBookmark(marked.id);
       else await api.addBookmark(book.id, position);
+      // From the menu the page itself shows nothing, so say what happened.
+      showBadge(marked ? "Bookmark removed" : "Bookmarked");
       setBookmarks(await api.bookmarks(book.id));
     } catch (e) {
       setError(message(e));
@@ -519,6 +612,7 @@ export function Reader({ book, at, onClose }: Props) {
   const reading = stretch.current && amount(stretch.current.now, stretch.current.size);
   const pace = reading ? add(total(paces, kind), reading.units, reading.minutes, kind) : total(paces, kind);
   const left = length ? timeLeftLine(timeLeft(fraction, length, contents, rate(pace, kind))) : null;
+  const read = timeReadLine(timeRead + unsaved.current);
   // The page (PDF) or section (EPUB) being read, to mark the chapter in the contents.
   const here = position?.location ?? initial?.location;
   const place = !here ? 0 : pdf ? Number.parseInt(here, 10) || 1 : sectionOf(here);
@@ -571,47 +665,8 @@ export function Reader({ book, at, onClose }: Props) {
           <ChevronLeft className="size-6" />
         </Button>
         <strong className="min-w-0 flex-1 truncate text-center">{book.title}</strong>
-        <Button
-          variant="ghost"
-          size="icon-lg"
-          className={cn(marked && "text-warm")}
-          onClick={toggleBookmark}
-          disabled={!position}
-          aria-label={marked ? "Remove bookmark" : "Add bookmark"}
-          aria-pressed={!!marked}
-        >
-          {marked ? <BookmarkCheck className="size-5 fill-current" /> : <BookmarkIcon className="size-5" />}
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-lg"
-          className={cn(favorite && "text-amber-500")}
-          onClick={toggleFavorite}
-          aria-label={favorite ? "Remove from favorites" : "Add to favorites"}
-          aria-pressed={favorite}
-        >
-          <Star className={cn("size-5", favorite && "fill-current")} />
-        </Button>
-        <Button variant="ghost" size="icon-lg" onClick={() => setShowDisplay(true)} aria-label="Display settings">
-          <Type className="size-5" />
-        </Button>
-        <Button variant="ghost" size="icon-lg" onClick={() => setSearchOpen(true)} aria-label="Search in book">
-          <Search className="size-5" />
-        </Button>
-        <Button variant="ghost" size="icon-lg" onClick={() => setPanel(true)} aria-label="Contents, highlights and bookmarks">
-          <List className="size-5" />
-        </Button>
-        {desktop && (
-          <Button
-            variant="ghost"
-            size="icon-lg"
-            onClick={toggleFullscreen}
-            aria-label={fullscreen ? "Exit full screen" : "Full screen"}
-            aria-pressed={fullscreen}
-          >
-            {fullscreen ? <Minimize2 className="size-5" /> : <Maximize2 className="size-5" />}
-          </Button>
-        )}
+        {/* As wide as the back button, so the title stays centred. */}
+        <span className="size-10 shrink-0" aria-hidden />
       </header>
 
       {remote && (
@@ -652,6 +707,7 @@ export function Reader({ book, at, onClose }: Props) {
       )}
 
       <footer
+        ref={footer}
         inert={!chrome}
         className={cn(
           "absolute inset-x-0 bottom-0 z-20 border-t bg-card/95 px-4 pt-2.5 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur transition-transform duration-200",
@@ -664,40 +720,70 @@ export function Reader({ book, at, onClose }: Props) {
             {/* EPUB places already end in their percentage ("Chapter 3 · 37%"). */}
             {pdf && <span className="ml-2 tabular-nums">{Math.round(fraction * 100)}%</span>}
           </span>
-          <div className="flex shrink-0 items-center" role="group" aria-label={pdf ? "Zoom" : "Text size"}>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={pdf ? "Zoom out" : "Smaller text"}
-              disabled={pdf ? zoom <= 0.5 : display.size <= SIZES[0]}
-              onClick={() => zoomStep(-1)}
-            >
-              <ZoomOut />
-            </Button>
-            <button
-              className="w-12 rounded-md py-1 text-center tabular-nums hover:bg-accent"
-              onClick={zoomReset}
-              aria-label={pdf ? "Fit to screen" : "Reset text size"}
-              title={pdf ? "Fit to screen" : "Reset text size"}
-            >
-              {zoomLevel}%
-            </button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={pdf ? "Zoom in" : "Larger text"}
-              disabled={pdf ? zoom >= 4 : display.size >= SIZES[SIZES.length - 1]!}
-              onClick={() => zoomStep(1)}
-            >
-              <ZoomIn />
-            </Button>
-          </div>
+          {read && <span className="shrink-0">{read}</span>}
         </div>
         <div className="meter">
           <div style={{ width: `${Math.round(fraction * 100)}%` }} />
         </div>
         {left && <p className="mt-1.5 truncate text-xs text-muted-foreground">{left}</p>}
+        {/* The reading tools sit at the bottom, in reach of a thumb. */}
+        <nav className="-mx-2 mt-1 flex items-center justify-around" aria-label="Reading tools">
+          <Button variant="ghost" size="icon-lg" onClick={() => setPanel(true)} aria-label="Contents, highlights and bookmarks" title="Contents">
+            <List className="size-5" />
+          </Button>
+          <Button variant="ghost" size="icon-lg" onClick={() => setSearchOpen(true)} aria-label="Search in book" title="Search">
+            <Search className="size-5" />
+          </Button>
+          {aloud.available && (
+            <Button
+              variant="ghost"
+              size="icon-lg"
+              aria-label={listening ? "Stop reading aloud" : "Read aloud from here"}
+              title={listening ? "Stop reading aloud" : "Read aloud"}
+              aria-pressed={listening}
+              className={cn(listening && "text-primary")}
+              onClick={() => (listening ? aloud.stop() : void aloud.start())}
+            >
+              <Headphones className="size-5" />
+            </Button>
+          )}
+          <Button variant="ghost" size="icon-lg" onClick={() => setShowDisplay(true)} aria-label="Display settings" title="Display">
+            <Type className="size-5" />
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon-lg" aria-label="More" title="More">
+                <Ellipsis className="size-5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="end" className="bg-card">
+              <DropdownMenuItem onSelect={toggleBookmark} disabled={!position}>
+                {marked ? <BookmarkCheck className="fill-current text-warm" /> : <BookmarkIcon />}
+                {marked ? "Remove bookmark" : "Bookmark this page"}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={toggleFavorite}>
+                <Star className={cn(favorite && "fill-current text-amber-500")} />
+                {favorite ? "Remove from favorites" : "Add to favorites"}
+              </DropdownMenuItem>
+              {desktop && (
+                <DropdownMenuItem onSelect={toggleFullscreen}>
+                  {fullscreen ? <Minimize2 /> : <Maximize2 />}
+                  {fullscreen ? "Exit full screen" : "Full screen"}
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </nav>
       </footer>
+
+      {/* Above the footer while it shows, at the bottom of the page otherwise. */}
+      <ReadAloudBar
+        aloud={aloud}
+        onVoices={() => setShowVoices(true)}
+        className="absolute left-1/2 z-30 -translate-x-1/2 transition-[bottom] duration-200"
+        style={{ bottom: chrome ? footerHeight + 12 : "calc(env(safe-area-inset-bottom) + 0.75rem)" }}
+      />
+      <VoicesSheet open={showVoices} onOpenChange={setShowVoices} aloud={aloud} />
 
       {badge && (
         <div
@@ -796,7 +882,12 @@ export function Reader({ book, at, onClose }: Props) {
         onRemoveHighlight={removeHighlight}
         onCopy={copy}
       />
-      <DisplaySheet open={showDisplay} onOpenChange={setShowDisplay} reading />
+      <DisplaySheet
+        open={showDisplay}
+        onOpenChange={setShowDisplay}
+        reading
+        zoom={pdf ? { level: zoomLevel, canOut: zoom > 0.5, canIn: zoom < 4, step: zoomStep, reset: zoomReset } : undefined}
+      />
     </div>
   );
 }

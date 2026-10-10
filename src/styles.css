@@ -329,3 +329,7 @@
 ::highlight(reader-search) {
   background-color: rgb(255 140 0 / 0.5);
 }
+/* The sentence being read aloud (EPUB chapters: highlightCss). */
+::highlight(reader-aloud) {
+  background-color: rgb(20 184 166 / 0.24);
+}

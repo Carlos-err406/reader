@@ -2,6 +2,7 @@ import type { Highlight, Position } from "./api";
 import type { Layout } from "./display";
 import type { Rect, TextSelection } from "./highlights";
 import type { OnFound, SearchHit } from "./search";
+import type { Sentence } from "./sentences";
 
 /** A table-of-contents entry. */
 export interface TocEntry {
@@ -105,4 +106,14 @@ export interface ViewerHandle {
   length(): number | null;
   /** Searches the whole book, reporting matches as it goes, until done or aborted. */
   search(query: string, onFound: OnFound, signal: AbortSignal): Promise<void>;
+  /**
+   * Reading aloud: the sentences from the top of the page on screen to the end of its chapter
+   * (EPUB) or page (PDF). With `after` (a sentence's location), those of the next chapter or
+   * page that has any. Null past the end of the book.
+   */
+  sentences(after?: string): Promise<Sentence[] | null>;
+  /** Marks the sentence being read aloud and keeps it on screen, as the reader's move; null clears it. */
+  speak(location: string | null): void;
+  /** The book's language (a BCP 47 tag), when it says. */
+  language(): string | null;
 }

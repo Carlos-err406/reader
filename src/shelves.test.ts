@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Book } from "./api";
-import { continueReading, counts, inSection, matches, sortBooks } from "./shelves";
+import { continueReading, counts, inSection, inView, loadView, matches, pickedTags, sortBooks } from "./shelves";
 
 const book = (patch: Partial<Book>): Book => ({
   id: patch.title ?? "x",
@@ -53,13 +53,31 @@ describe("library sections", () => {
   });
 });
 
-describe("collections", () => {
-  it("show their own books and fall back when deleted", async () => {
-    const { onShelf, shelfCollection } = await import("./shelves");
-    const collections = [{ id: "s", name: "Sci-fi", createdAt: 1, books: [dune.id] }];
-    expect(all.filter((b) => onShelf(b, "c:s", collections))).toEqual([dune]);
-    expect(all.filter((b) => onShelf(b, "c:gone", collections))).toEqual([]);
-    expect(shelfCollection("c:s", collections)?.name).toBe("Sci-fi");
-    expect(shelfCollection("reading", collections)).toBeUndefined();
+describe("tags", () => {
+  const scifi = { id: "s", name: "Sci-fi", createdAt: 1, books: [dune.id, notes.id] };
+  const classic = { id: "c", name: "Classic", createdAt: 1, books: [dune.id, emma.id] };
+  const tags = [classic, scifi];
+
+  it("show the books with every tag picked, within the section", () => {
+    expect(all.filter((b) => inView(b, "all", [scifi]))).toEqual([dune, notes]);
+    expect(all.filter((b) => inView(b, "all", [scifi, classic]))).toEqual([dune]);
+    expect(all.filter((b) => inView(b, "finished", [classic]))).toEqual([emma]);
+    expect(all.filter((b) => inView(b, "unread", []))).toEqual([codigo, notes2]);
+  });
+
+  it("leave out tags that were deleted", () => {
+    expect(pickedTags(["s", "gone"], tags)).toEqual([scifi]);
+    expect(pickedTags([], tags)).toEqual([]);
+  });
+
+  it("carry over a collection that was open before tags", () => {
+    const view = (saved: unknown) => {
+      vi.stubGlobal("localStorage", { getItem: () => JSON.stringify(saved) });
+      return loadView();
+    };
+    expect(view({ section: "c:s", sort: "title" })).toEqual({ section: "all", tags: ["s"], sort: "title" });
+    expect(view({ section: "reading", tags: ["s", "c", 3] })).toEqual({ section: "reading", tags: ["s", "c"], sort: "recent" });
+    expect(view({ section: "nope", tags: "s" })).toEqual({ section: "all", tags: [], sort: "recent" });
+    vi.unstubAllGlobals();
   });
 });

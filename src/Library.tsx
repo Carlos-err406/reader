@@ -41,23 +41,21 @@ import { cn, swallowNextClick } from "@/lib/utils";
 import { api, message, onChanged as onRecordsChanged, type Book, type Collection, type Status } from "./api";
 import { ago, day, size, statusLine } from "./format";
 import {
-  collectionShelf,
   continueReading,
   counts,
+  inView,
   loadView,
-  onShelf,
-  shelfCollection,
   matches,
+  pickedTags,
   saveView,
   SECTIONS,
   sortBooks,
   SORTS,
   type LibraryView,
   type Section,
-  type Shelf,
   type Sort,
 } from "./shelves";
-import { CollectionsSheet } from "./CollectionsSheet";
+import { TagsSheet } from "./TagsSheet";
 import { NameSheet } from "@/components/NameSheet";
 import { Panel, useBackCloses } from "@/components/Panel";
 import { importBook } from "./imports";
@@ -100,18 +98,18 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
     });
   const [query, setQuery] = useState("");
 
-  // Collections, kept fresh as this or the other device changes them.
-  const [collections, setCollections] = useState<Collection[]>();
-  const loadCollections = useCallback(() => {
-    api.collections().then(setCollections, (e) => setError(message(e)));
+  // Tags, kept fresh as this or the other device changes them. They're stored as collections.
+  const [tags, setTags] = useState<Collection[]>();
+  const loadTags = useCallback(() => {
+    api.collections().then(setTags, (e) => setError(message(e)));
   }, []);
   useEffect(() => {
-    loadCollections();
+    loadTags();
     const unlisten = onRecordsChanged((changed) => {
-      if (changed.some((c) => ["collection", "member", "book"].includes(c.kind))) loadCollections();
+      if (changed.some((c) => ["collection", "member", "book"].includes(c.kind))) loadTags();
     });
     return () => void unlisten.then((f) => f());
-  }, [loadCollections]);
+  }, [loadTags]);
   const [filing, setFiling] = useState<Book[]>([]);
   // Phones: the book whose action sheet is open.
   const [acting, setActing] = useState<Book>();
@@ -128,35 +126,45 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
   const [naming, setNaming] = useState<{ rename?: Collection } | null>(null);
   const [deleting, setDeleting] = useState<Collection>();
 
-  // A collection deleted (here or elsewhere) while open falls back to all books.
-  const opened = shelfCollection(view.section, collections ?? []);
-  const section: Shelf = view.section.startsWith("c:") && collections && !opened ? "all" : view.section;
-  const builtIn = SECTIONS.find((s) => s.id === section);
-  const current = builtIn ?? {
-    id: section,
-    name: opened?.name ?? "Collection",
-    empty: "No books here yet. Add one from its ⋯ menu, under Collections.",
+  // The tags picked to filter by; one deleted (here or elsewhere) stops filtering.
+  const filter = pickedTags(view.tags, tags ?? []);
+  const { section } = view;
+  const current = SECTIONS.find((s) => s.id === section)!;
+  // A lone tag can be renamed or deleted from beside the title.
+  const lone = filter.length === 1 ? filter[0] : undefined;
+  const title = [...(section === "all" ? [] : [current.name]), ...filter.map((t) => t.name)].join(" · ");
+  const empty =
+    lone && section === "all"
+      ? "No books here yet. Add one from its ⋯ menu, under Tags."
+      : filter.length
+        ? "No books here have all of these tags."
+        : current.empty;
+  const toggleTag = (id: string) => {
+    const ids = filter.map((t) => t.id);
+    setView({ tags: ids.includes(id) ? ids.filter((t) => t !== id) : [...ids, id] });
   };
   const sortName = SORTS.find((s) => s.id === view.sort)!.name;
   const tally = counts(books);
   const searching = query.trim().length > 0;
-  // Continue reading leads All and Reading, unless searching; it isn't repeated in the list.
-  const resume = !searching && (section === "all" || section === "reading") ? continueReading(books) : undefined;
+  // Continue reading leads All and Reading, unless searching or filtering by tag; it isn't
+  // repeated in the list.
+  const resume = !searching && !view.tags.length && (section === "all" || section === "reading") ? continueReading(books) : undefined;
+  // Until the tags load, a filter by them shows nothing rather than every book.
   const shown = sortBooks(
-    books.filter((b) => onShelf(b, section, collections ?? []) && matches(b, query) && b.id !== resume?.id),
+    books.filter((b) => (tags || !view.tags.length) && inView(b, section, filter) && matches(b, query) && b.id !== resume?.id),
     view.sort,
   );
   const actionsFor = (book: Book): BookActions => ({
     onOpen: () => onOpen(book),
     onSelect: () => setSelected(new Set([book.id])),
     onSheet: wide ? undefined : () => setActing(book),
-    onCollections: () => setFiling([book]),
+    onTags: () => setFiling([book]),
     onEdit: () => setEditing(book),
     onFavorite: (on) => void mark(api.setFavorite(book.id, on)),
     onFinished: (on) => void mark(api.setFinished(book.id, on)),
     onRemove: () => setRemoving(book),
   });
-  const tagsOf = (book: Book) => (collections ?? []).filter((c) => c.books.includes(book.id)).map((c) => c.name);
+  const tagsOf = (book: Book) => (tags ?? []).filter((c) => c.books.includes(book.id)).map((c) => c.name);
   const picked = books.filter((b) => selected?.has(b.id));
   const toggleSelected = (book: Book) =>
     setSelected((old) => {
@@ -270,15 +278,15 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
   }, []);
 
   const attention = status && ["warn", "error"].includes(statusLine(status).tone);
-  const pick = (shelf: Shelf) => {
-    setView({ section: shelf });
+  const pick = (section: Section) => {
+    setView({ section });
     setShowMenu(false);
   };
 
   const saveName = async (name: string) => {
     if (naming?.rename) await api.renameCollection(naming.rename.id, name);
-    else setView({ section: collectionShelf((await api.createCollection(name)).id) });
-    loadCollections();
+    else setView({ tags: [(await api.createCollection(name)).id] });
+    loadTags();
   };
 
   const pullSync = useCallback(() => {
@@ -372,14 +380,18 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
     }
   };
 
-  const nav = (onPicked: (shelf: Shelf) => void, then: (open: () => void) => void) => (
+  // Picking a section closes the phone's sheet; tags toggle, so several can be picked in a row.
+  const nav = (onPicked: (section: Section) => void, then: (open: () => void) => void) => (
     <ShelfNav
       section={section}
       tally={tally}
-      collections={collections}
+      tags={tags}
+      picked={filter.map((t) => t.id)}
       highlights={status?.library.highlights ?? 0}
       onPick={onPicked}
-      onNewCollection={() => then(() => setNaming({}))}
+      onTag={toggleTag}
+      onClearTags={() => setView({ tags: [] })}
+      onNewTag={() => then(() => setNaming({}))}
       onHighlights={() => then(() => setShowHighlights(true))}
     />
   );
@@ -419,7 +431,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
           {wide && (
             <aside className="sticky top-4 w-52 shrink-0 self-start pt-2" aria-label="Library sections">
               <h1 className="mb-4 px-3 font-serif text-3xl font-semibold">Library</h1>
-              {nav((shelf) => setView({ section: shelf }), (open) => open())}
+              {nav((section) => setView({ section }), (open) => open())}
               <div className="mt-2 grid gap-0.5 border-t pt-2">
                 {status && (
                   <button
@@ -452,8 +464,8 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
             <header className="flex items-center gap-2 pt-2 pb-3">
               {wide ? (
                 <div className="flex min-w-0 flex-1 items-center gap-1">
-                  <h2 className="truncate font-serif text-2xl font-semibold">{current.name}</h2>
-                  {opened && <CollectionMenu collection={opened} onRename={() => setNaming({ rename: opened })} onDelete={() => setDeleting(opened)} />}
+                  <h2 className="truncate font-serif text-2xl font-semibold">{title || current.name}</h2>
+                  {lone && <TagMenu tag={lone} onRename={() => setNaming({ rename: lone })} onDelete={() => setDeleting(lone)} />}
                 </div>
               ) : (
                 <div className="flex min-w-0 flex-1 items-center">
@@ -461,14 +473,14 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
                     type="button"
                     onClick={() => setShowMenu(true)}
                     aria-haspopup="dialog"
-                    aria-label={`${section === "all" ? "Library" : current.name}: sections, collections and settings${attention ? " (sync needs attention)" : ""}`}
+                    aria-label={`${title || "Library"}: sections, tags and settings${attention ? " (sync needs attention)" : ""}`}
                     className="relative flex min-w-0 items-center gap-1 rounded-md text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
                   >
-                    <h1 className="truncate font-serif text-[1.55rem] font-semibold">{section === "all" ? "Library" : current.name}</h1>
+                    <h1 className="truncate font-serif text-[1.55rem] font-semibold">{title || "Library"}</h1>
                     <ChevronDown className="size-5 shrink-0 text-muted-foreground" />
                     {attention && status && <span className={cn("dot absolute -top-0.5 -right-2", statusLine(status).tone)} />}
                   </button>
-                  {opened && <CollectionMenu collection={opened} onRename={() => setNaming({ rename: opened })} onDelete={() => setDeleting(opened)} />}
+                  {lone && <TagMenu tag={lone} onRename={() => setNaming({ rename: lone })} onDelete={() => setDeleting(lone)} />}
                 </div>
               )}
               {wide ? (
@@ -571,7 +583,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
             )}
 
             {!wide && (
-              <Panel open={showMenu} onOpenChange={setShowMenu} title="Library" description="Sections, collections, sorting and settings">
+              <Panel open={showMenu} onOpenChange={setShowMenu} title="Library" description="Sections, tags, sorting and settings">
                 {nav(pick, fromMenu)}
                 {books.length > 0 && (
                   <section className="grid gap-1.5" aria-label="Sort by">
@@ -657,7 +669,7 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
                         <button
                           type="button"
                           onClick={() => {
-                            // The sheet closes first, so the next step (collections, a
+                            // The sheet closes first, so the next step (tags, a
                             // confirmation) takes its place.
                             setActing(undefined);
                             a.run();
@@ -677,12 +689,12 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
               )}
             </Panel>
             <EditDetails book={editing} onClose={() => setEditing(undefined)} onSaved={onChanged} />
-            <CollectionsSheet books={filing} onClose={() => setFiling([])} collections={collections ?? []} onChanged={loadCollections} />
+            <TagsSheet books={filing} onClose={() => setFiling([])} tags={tags ?? []} onChanged={loadTags} />
             <NameSheet
               open={!!naming}
               onOpenChange={(open) => !open && setNaming(null)}
-              title={naming?.rename ? "Rename collection" : "New collection"}
-              description={naming?.rename ? "Books in it stay where they are." : "Then add books from their ⋯ menu, under Collections."}
+              title={naming?.rename ? "Rename tag" : "New tag"}
+              description={naming?.rename ? "Its books keep it under the new name." : "Then add it to books from their ⋯ menu, under Tags."}
               initial={naming?.rename?.name ?? ""}
               confirm={naming?.rename ? "Rename" : "Create"}
               onSave={saveName}
@@ -691,9 +703,9 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
               open={!!deleting}
               onOpenChange={(open) => !open && setDeleting(undefined)}
               title={`Delete “${deleting?.name ?? ""}”?`}
-              description="The collection is deleted on every synced device. Its books stay in your library."
+              description="The tag is deleted on every synced device. Its books stay in your library."
               confirm="Delete"
-              onConfirm={() => deleting && void mark(api.deleteCollection(deleting.id).then(loadCollections))}
+              onConfirm={() => deleting && void mark(api.deleteCollection(deleting.id).then(loadTags))}
             />
             <ConfirmDialog
               open={!!removing}
@@ -737,12 +749,12 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
             ) : shown.length === 0 ? (
               !resume && (
                 <p className="px-4 py-12 text-center text-muted-foreground">
-                  {query.trim() ? `No books match “${query.trim()}”.` : current.empty}
+                  {query.trim() ? `No books match “${query.trim()}”.` : empty}
                 </p>
               )
             ) : (
               <>
-                {resume && <h2 className="mb-2 text-sm font-semibold text-muted-foreground">{current.id === "all" ? "All books" : current.name}</h2>}
+                {resume && <h2 className="mb-2 text-sm font-semibold text-muted-foreground">{title || "All books"}</h2>}
                 <ul className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
                   {shown.map((book) => (
                     <BookCard
@@ -779,9 +791,9 @@ export function Library({ books, status, onStatus, onOpen, onChanged }: Props) {
             <Button variant="ghost" size="sm" onClick={() => setSelected(allPicked ? new Set() : new Set(selectable.map((b) => b.id)))}>
               {allPicked ? "None" : "All"}
             </Button>
-            <Button variant="ghost" size={wide ? "sm" : "icon"} disabled={!picked.length} onClick={() => setFiling(picked)} aria-label="Add to collection">
+            <Button variant="ghost" size={wide ? "sm" : "icon"} disabled={!picked.length} onClick={() => setFiling(picked)} aria-label="Tags">
               <Tag />
-              {wide && "Collection"}
+              {wide && "Tags"}
             </Button>
             <Button
               variant="ghost"
@@ -846,17 +858,24 @@ function MenuRow({
 }
 
 interface NavProps {
-  section: Shelf;
+  section: Section;
   tally: Record<Section, number>;
-  collections: Collection[] | undefined;
+  tags: Collection[] | undefined;
+  /** Ids of the tags filtering the library. */
+  picked: string[];
   highlights: number;
-  onPick: (shelf: Shelf) => void;
-  onNewCollection: () => void;
+  onPick: (section: Section) => void;
+  onTag: (id: string) => void;
+  onClearTags: () => void;
+  onNewTag: () => void;
   onHighlights: () => void;
 }
 
-/** Sections and collections with their counts: the Mac's sidebar and the phone's library sheet. */
-function ShelfNav({ section, tally, collections, highlights, onPick, onNewCollection, onHighlights }: NavProps) {
+/**
+ * Sections and tags with their counts: the Mac's sidebar and the phone's library sheet. One
+ * section shows at a time; tags narrow it, and a book needs every tag picked.
+ */
+function ShelfNav({ section, tally, tags, picked, highlights, onPick, onTag, onClearTags, onNewTag, onHighlights }: NavProps) {
   const row = (active: boolean) =>
     cn(
       "flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring",
@@ -871,25 +890,32 @@ function ShelfNav({ section, tally, collections, highlights, onPick, onNewCollec
           <span className="text-xs text-muted-foreground tabular-nums">{tally[s.id]}</span>
         </button>
       ))}
-      <div className="mt-4 mb-1 flex items-center justify-between px-3">
-        <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Collections</h3>
-        <Button variant="ghost" size="icon-sm" className="-mr-2 size-7 text-muted-foreground" aria-label="New collection" onClick={onNewCollection}>
-          <Plus />
-        </Button>
+      <div className="mt-4 mb-1 flex items-center justify-between gap-2 px-3">
+        <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Tags</h3>
+        <div className="-mr-2 flex items-center">
+          {picked.length > 0 && (
+            <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground" onClick={onClearTags}>
+              Clear
+            </Button>
+          )}
+          <Button variant="ghost" size="icon-sm" className="size-7 text-muted-foreground" aria-label="New tag" onClick={onNewTag}>
+            <Plus />
+          </Button>
+        </div>
       </div>
-      {collections?.map((c) => {
-        const shelf = collectionShelf(c.id);
+      {tags?.map((t) => {
+        const on = picked.includes(t.id);
         return (
-          <button key={c.id} type="button" aria-current={section === shelf ? "page" : undefined} onClick={() => onPick(shelf)} className={row(section === shelf)}>
-            <Tag className="size-4 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate">{c.name}</span>
-            <span className="text-xs text-muted-foreground tabular-nums">{c.books.length}</span>
+          <button key={t.id} type="button" aria-pressed={on} onClick={() => onTag(t.id)} className={row(on)}>
+            {on ? <Check className="size-4 shrink-0 text-primary" strokeWidth={3} /> : <Tag className="size-4 shrink-0 text-muted-foreground" />}
+            <span className="min-w-0 flex-1 truncate">{t.name}</span>
+            <span className="text-xs text-muted-foreground tabular-nums">{t.books.length}</span>
           </button>
         );
       })}
-      {collections?.length === 0 && (
-        <button type="button" onClick={onNewCollection} className={cn(row(false), "text-muted-foreground")}>
-          Group books into collections…
+      {tags?.length === 0 && (
+        <button type="button" onClick={onNewTag} className={cn(row(false), "text-muted-foreground")}>
+          Tag books to group them…
         </button>
       )}
       <div className="my-2 border-t" />
@@ -902,23 +928,23 @@ function ShelfNav({ section, tally, collections, highlights, onPick, onNewCollec
   );
 }
 
-/** Rename or delete the open collection. */
-function CollectionMenu({ collection, onRename, onDelete }: { collection: Collection; onRename: () => void; onDelete: () => void }) {
+/** Rename or delete the tag filtering the library. */
+function TagMenu({ tag, onRename, onDelete }: { tag: Collection; onRename: () => void; onDelete: () => void }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon-sm" className="shrink-0 text-muted-foreground" aria-label={`Options for ${collection.name}`}>
+        <Button variant="ghost" size="icon-sm" className="shrink-0 text-muted-foreground" aria-label={`Options for the tag ${tag.name}`}>
           <EllipsisVertical />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="bg-card">
         <DropdownMenuItem onSelect={onRename}>
           <Pencil />
-          Rename
+          Rename tag
         </DropdownMenuItem>
         <DropdownMenuItem variant="destructive" onSelect={onDelete}>
           <Trash2 />
-          Delete collection
+          Delete tag
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -1020,7 +1046,7 @@ function ContinueCard({ book, tags, onOpen, actions, selection, onToggle, contex
 
 interface BookActions {
   onOpen: () => void;
-  onCollections: () => void;
+  onTags: () => void;
   onEdit: () => void;
   onFavorite: (on: boolean) => void;
   onFinished: (on: boolean) => void;
@@ -1049,7 +1075,7 @@ function bookActions(book: Book, a: BookActions, withOpen: boolean): Action[] {
       label: book.favorite ? "Remove from favorites" : "Add to favorites",
       run: () => a.onFavorite(!book.favorite),
     },
-    { id: "collections", icon: <Tag />, label: "Collections…", run: a.onCollections },
+    { id: "tags", icon: <Tag />, label: "Tags…", run: a.onTags },
     { id: "edit", icon: <Pencil />, label: "Edit details…", run: a.onEdit },
     {
       id: "finished",
@@ -1130,7 +1156,7 @@ function bookStatus(book: Book): React.ReactNode {
 
 interface CardProps {
   book: Book;
-  /** Names of the collections it's in. */
+  /** Names of its tags. */
   tags: string[];
   onOpen: () => void;
   actions: BookActions;
@@ -1200,7 +1226,7 @@ function BookCard({ book, tags, onOpen, actions, selection, onLongPress, context
             {book.author && <span className="truncate text-sm">{book.author}</span>}
             <span className="flex items-center gap-1 truncate text-sm text-muted-foreground">{bookStatus(book)}</span>
             {tags.length > 0 && (
-              <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground" aria-label={`Collections: ${tags.join(", ")}`}>
+              <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground" aria-label={`Tags: ${tags.join(", ")}`}>
                 <Tag className="size-3 shrink-0" />
                 <span className="truncate">{tags.join(" · ")}</span>
               </span>

@@ -75,6 +75,15 @@ export function follow(
   return { stretch: { ...stretch, to: Math.max(stretch.to, at), end: now } };
 }
 
+/**
+ * Minutes of reading between two moments the reader was there (a page turn, a tap, the app
+ * coming to the front). A pause longer than `AWAY` is the reader away, so it counts for nothing.
+ */
+export function spent(since: number, now: number): number {
+  const gap = now - since;
+  return gap > 0 && gap <= AWAY ? gap / 60_000 : 0;
+}
+
 /** Minutes left in the chapter (when the book has chapters) and in the book. */
 export function timeLeft(at: number, size: number, entries: TocEntry[] | null, perMinute: number) {
   const minutes = (fraction: number) => Math.max(0, fraction * size) / perMinute;
@@ -95,6 +104,11 @@ export function duration(minutes: number): string {
     return m ? `${h} h ${m} min` : `${h} h`;
   }
   return `${Math.round(minutes / 60)} h`;
+}
+
+/** "1 h 20 min read", once there's a minute to show. */
+export function timeReadLine(minutes: number): string | null {
+  return minutes >= 1 ? `${duration(minutes)} read` : null;
 }
 
 /** The footer's line: "12 min left in chapter · 4 h in book". */

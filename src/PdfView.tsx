@@ -7,7 +7,9 @@ import { attachPinch, MAX_ZOOM, MIN_ZOOM, type Focal } from "./pinch";
 import { GLIDE, isPageTap, type TocEntry, type ViewerHandle, type ViewerProps } from "./viewer";
 import { attachTextLayer } from "./pdfText";
 import { excerpt, foldQuery, matches, MAX_HITS, type OnFound, type SearchHit } from "./search";
+import { sentences, spoken, type Sentence } from "./sentences";
 import {
+  ALOUD_MARK,
   byAge,
   SEARCH_MARK,
   mergeLines,
@@ -58,12 +60,9 @@ async function searchPdf(doc: PDFDocumentProxy, query: string, onFound: OnFound,
   }
 }
 
-/**
- * Marks a search match in a page's text layer, whose text is the page's runs in the same order
- * (line breaks as <br>), and brings it into view.
- */
-function markInLayer(layer: HTMLElement, query: string, nth: number) {
-  const nodes: { node: Text | null; start: number }[] = [];
+/** A page's text layer as one string, the page's runs in the same order (line breaks as <br>). */
+function layerText(layer: HTMLElement) {
+  const nodes: { node: Text; start: number }[] = [];
   let text = "";
   const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
@@ -72,23 +71,65 @@ function markInLayer(layer: HTMLElement, query: string, nth: number) {
       text += n.data;
     } else if (n instanceof HTMLBRElement) text += "\n";
   }
-  const found = matches(text, foldQuery(query))[nth];
+  return { text, nodes };
+}
+
+/** Marks [start, end) of a page's text (as `pageText` gives it) in its text layer, as `name`. */
+function markSpan(layer: HTMLElement, name: string, start: number, end: number, nodes = layerText(layer).nodes) {
   const registry = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
   const Highlight = (window as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
-  if (!found || !registry || !Highlight) return;
+  if (!nodes.length || !registry || !Highlight) return null;
   const at = (pos: number): [Text, number] => {
     let i = nodes.length - 1;
     while (i > 0 && nodes[i]!.start > pos) i--;
     const { node, start } = nodes[i]!;
-    return [node!, Math.min(pos - start, node!.length)];
+    return [node, Math.min(Math.max(0, pos - start), node.length)];
   };
   const range = document.createRange();
-  const [startNode, startOffset] = at(found[0]);
-  const [endNode, endOffset] = at(found[1] - 1);
+  const [startNode, startOffset] = at(start);
+  const [endNode, endOffset] = at(end - 1);
   range.setStart(startNode, startOffset);
   range.setEnd(endNode, Math.min(endOffset + 1, endNode.length));
-  registry.set(SEARCH_MARK, new Highlight(range));
-  startNode.parentElement?.scrollIntoView({ block: "center", behavior: "smooth" });
+  registry.set(name, new Highlight(range));
+  return startNode.parentElement;
+}
+
+/** Marks a search match in a page's text layer, and brings it into view. */
+function markInLayer(layer: HTMLElement, query: string, nth: number) {
+  const { text, nodes } = layerText(layer);
+  const found = matches(text, foldQuery(query))[nth];
+  if (!found) return;
+  markSpan(layer, SEARCH_MARK, found[0], found[1], nodes)?.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+/** Where a sentence read aloud is: its page, and where it is in the page's text. */
+interface Spoken {
+  page: number;
+  start: number;
+  end: number;
+}
+const spokenAt = (location: string): Spoken | null => {
+  const m = /^(\d+):(\d+)-(\d+)$/.exec(location);
+  return m ? { page: Number(m[1]), start: Number(m[2]), end: Number(m[3]) } : null;
+};
+
+/** The sentences of the first page from `from` on that has any; null past the last page. */
+async function pdfSentences(doc: PDFDocumentProxy, from: number, lang?: string): Promise<Sentence[] | null> {
+  for (let page = Math.max(1, from); page <= doc.numPages; page++) {
+    let text = "";
+    try {
+      text = await pageText(doc, page);
+    } catch {
+      // An unreadable page: nothing to read on it.
+    }
+    // A PDF breaks lines wherever they fall, not between sentences.
+    const list = sentences(text.replace(/\n/g, " "), lang).map(([start, end]) => ({
+      text: spoken(text.slice(start, end)),
+      location: `${page}:${start}-${end}`,
+    }));
+    if (list.length) return list;
+  }
+  return null;
 }
 
 /** The document's outline (its bookmarks panel), each entry resolved to the page it opens. */
@@ -140,6 +181,7 @@ function PdfPage({
   marks,
   dark,
   found,
+  aloud,
 }: {
   doc: PDFDocumentProxy;
   number: number;
@@ -149,6 +191,8 @@ function PdfPage({
   dark: boolean;
   /** The search match to mark, when it's on this page. */
   found?: { query: string; nth: number };
+  /** The sentence being read aloud, when it's on this page. */
+  aloud?: Spoken;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const text = useRef<HTMLDivElement>(null);
@@ -201,6 +245,11 @@ function PdfPage({
   useEffect(() => {
     if (found && words && text.current) markInLayer(text.current, found.query, found.nth);
   }, [found?.query, found?.nth, words]);
+  useEffect(() => {
+    if (aloud && words && text.current) {
+      markSpan(text.current, ALOUD_MARK, aloud.start, aloud.end)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [aloud?.start, aloud?.end, words]);
   return (
     <div className="pdf-page" data-page={number} style={box}>
       <canvas ref={canvas} />
@@ -320,6 +369,8 @@ export const PdfView = forwardRef<ViewerHandle, ViewerProps>(function PdfView(
   // Shared by both layouts, so switching keeps the page.
   const [page, setPage] = useState(0);
   const [aspects, setAspects] = useState<number[]>([]);
+  const [language, setLanguage] = useState<string | null>(null);
+  const [aloud, setAloud] = useState<Spoken | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -334,6 +385,13 @@ export const PdfView = forwardRef<ViewerHandle, ViewerProps>(function PdfView(
         setDoc(loaded);
         setPage(pdfPage(initial, loaded.numPages));
         void tableOfContents(loaded).then((entries) => !cancelled && onContents(entries), () => !cancelled && onContents([]));
+        void loaded.getMetadata().then(
+          ({ info }) => {
+            const lang = (info as { Language?: unknown } | null)?.Language;
+            if (!cancelled && typeof lang === "string" && lang) setLanguage(lang);
+          },
+          () => {},
+        );
         let differs = false;
         for (let n = 2; n <= loaded.numPages && !cancelled; n++) {
           const v = (await loaded.getPage(n)).getViewport({ scale: 1 });
@@ -453,11 +511,23 @@ export const PdfView = forwardRef<ViewerHandle, ViewerProps>(function PdfView(
   useEffect(() => {
     if (!found) (CSS as unknown as { highlights?: Map<string, unknown> }).highlights?.delete(SEARCH_MARK);
   }, [found]);
+  useEffect(() => {
+    if (!aloud) (CSS as unknown as { highlights?: Map<string, unknown> }).highlights?.delete(ALOUD_MARK);
+  }, [aloud]);
   if (!doc || !page) return <div className="pdf-frame" />;
   const mark = found && found.nth !== undefined ? { page: found.order, query: lastQuery.current, nth: found.nth } : undefined;
-  const shared = { doc, page, setPage, dark, zoom, handle: ref, onPageClick, onPinch, marks, mark, search: (q: string, f: OnFound, s: AbortSignal) => {
+  const shared = { doc, page, setPage, dark, zoom, handle: ref, onPageClick, onPinch, marks, mark, aloud, search: (q: string, f: OnFound, s: AbortSignal) => {
     lastQuery.current = q;
     return searchPdf(doc, q, f, s);
+  }, aloudHandle: {
+    sentences: (after?: string) => pdfSentences(doc, after ? (spokenAt(after)?.page ?? doc.numPages) + 1 : page, language ?? undefined),
+    language: () => language,
+    /** Marks the sentence; the layout shows its page. Returns its spot. */
+    mark: (location: string | null) => {
+      const spot = location ? spokenAt(location) : null;
+      setAloud(spot);
+      return spot;
+    },
   } };
   return (
     <div ref={root} className="contents">
@@ -477,10 +547,16 @@ interface LayoutProps {
   onPinch: ViewerProps["onPinch"];
   marks: Map<number, Mark[]>;
   mark: { page: number; query: string; nth: number } | undefined;
+  aloud: Spoken | null;
   search: (query: string, onFound: OnFound, signal: AbortSignal) => Promise<void>;
+  aloudHandle: {
+    sentences: ViewerHandle["sentences"];
+    language: ViewerHandle["language"];
+    mark: (location: string | null) => Spoken | null;
+  };
 }
 
-function PdfPages({ doc, page, setPage, dark, zoom, handle, onPageClick, onPinch, marks, mark, search }: LayoutProps) {
+function PdfPages({ doc, page, setPage, dark, zoom, handle, onPageClick, onPinch, marks, mark, aloud, search, aloudHandle }: LayoutProps) {
   const frame = useRef<HTMLDivElement>(null);
   const focal = useRef<Focal | null>(null);
   const size = useSize(frame);
@@ -497,8 +573,15 @@ function PdfPages({ doc, page, setPage, dark, zoom, handle, onPageClick, onPinch
       apart: (a, b) => Math.abs(pdfPage(a, pages) - pdfPage(b, pages)),
       length: () => pages,
       search,
+      sentences: aloudHandle.sentences,
+      language: aloudHandle.language,
+      // Reading on to the next page turns to it, as the reader would.
+      speak: (location) => {
+        const spot = aloudHandle.mark(location);
+        if (spot) setPage(spot.page);
+      },
     }),
-    [pages, setPage, search],
+    [pages, setPage, search, aloudHandle],
   );
   return (
     <div
@@ -518,6 +601,7 @@ function PdfPages({ doc, page, setPage, dark, zoom, handle, onPageClick, onPinch
           marks={marks.get(page)}
           dark={dark}
           found={mark?.page === page ? mark : undefined}
+          aloud={aloud?.page === page ? aloud : undefined}
         />
       </div>
     </div>
@@ -539,7 +623,9 @@ function PdfScroll({
   onPinch,
   marks,
   mark,
+  aloud,
   search,
+  aloudHandle,
 }: LayoutProps & { aspects: number[] }) {
   const frame = useRef<HTMLDivElement>(null);
   const focal = useRef<Focal | null>(null);
@@ -632,8 +718,16 @@ function PdfScroll({
       apart: (a, b) => Math.abs(pdfPage(a, doc.numPages) - pdfPage(b, doc.numPages)),
       length: () => doc.numPages,
       search,
+      sentences: aloudHandle.sentences,
+      language: aloudHandle.language,
+      // On the page being read, the page itself scrolls the sentence into view; another page is
+      // scrolled to first.
+      speak: (location) => {
+        const spot = aloudHandle.mark(location);
+        if (spot && spot.page !== current.current) frame.current?.scrollTo({ top: tops[spot.page - 1]! - GAP, behavior: "smooth" });
+      },
     }),
-    [doc, width, aspects, search],
+    [doc, width, aspects, search, aloudHandle],
   );
 
   const origin = preview && frame.current
@@ -660,6 +754,7 @@ function PdfScroll({
                   marks={marks.get(i + 1)}
                   dark={dark}
                   found={mark?.page === i + 1 ? mark : undefined}
+                  aloud={aloud?.page === i + 1 ? aloud : undefined}
                 />
               )}
             </div>

@@ -2,17 +2,17 @@ import type { Book, Collection } from "./api";
 import { fold } from "./format";
 
 export type Section = "all" | "reading" | "favorites" | "finished" | "unread";
-/** What the library shows: a built-in section, or a collection (`c:<id>`). */
-export type Shelf = Section | `c:${string}`;
 
-export const collectionShelf = (id: string): Shelf => `c:${id}`;
-export const shelfCollection = (shelf: Shelf, collections: Collection[]) =>
-  shelf.startsWith("c:") ? collections.find((c) => c.id === shelf.slice(2)) : undefined;
+/**
+ * Tags are stored as collections (`collection` and `member` records), so they sync with
+ * versions that call them that. The tags (ids) still in the library, in the library's order.
+ */
+export const pickedTags = (ids: string[], tags: Collection[]) => tags.filter((t) => ids.includes(t.id));
 
-export function onShelf(book: Book, shelf: Shelf, collections: Collection[]): boolean {
-  if (!shelf.startsWith("c:")) return inSection(book, shelf as Section);
-  return !!shelfCollection(shelf, collections)?.books.includes(book.id);
-}
+/** A book in the section, with every one of the tags. */
+export const inView = (book: Book, section: Section, tags: Collection[]) =>
+  inSection(book, section) && tags.every((t) => t.books.includes(book.id));
+
 export type Sort = "recent" | "title" | "author" | "added" | "progress";
 
 export const SECTIONS: { id: Section; name: string; empty: string }[] = [
@@ -102,7 +102,9 @@ export function continueReading(books: Book[]): Book | undefined {
 }
 
 export interface LibraryView {
-  section: Shelf;
+  section: Section;
+  /** Ids of the tags a book must all have to show. */
+  tags: string[];
   sort: Sort;
 }
 
@@ -110,17 +112,20 @@ const KEY = "reader:library-view";
 
 export function loadView(): LibraryView {
   try {
-    const saved = JSON.parse(localStorage.getItem(KEY) ?? "null") as Partial<LibraryView> | null;
+    const saved = JSON.parse(localStorage.getItem(KEY) ?? "null") as
+      | (Partial<Omit<LibraryView, "section">> & { section?: string })
+      | null;
+    // Before tags, a collection was shown on its own as the section `c:<id>`.
+    const old = typeof saved?.section === "string" && saved.section.startsWith("c:") ? [saved.section.slice(2)] : [];
+    const tags = Array.isArray(saved?.tags) ? saved.tags.filter((t): t is string => typeof t === "string") : old;
     return {
-      // A collection is checked against the library once it's loaded.
-      section:
-        SECTIONS.some((s) => s.id === saved?.section) || (typeof saved?.section === "string" && saved.section.startsWith("c:"))
-          ? saved!.section!
-          : "all",
-      sort: SORTS.some((s) => s.id === saved?.sort) ? saved!.sort! : "recent",
+      section: SECTIONS.find((s) => s.id === saved?.section)?.id ?? "all",
+      // Tags are checked against the library once it's loaded.
+      tags,
+      sort: SORTS.find((s) => s.id === saved?.sort)?.id ?? "recent",
     };
   } catch {
-    return { section: "all", sort: "recent" };
+    return { section: "all", tags: [], sort: "recent" };
   }
 }
 

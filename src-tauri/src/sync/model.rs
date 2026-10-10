@@ -62,6 +62,9 @@ pub enum Kind {
     /// One device's reading speed, for the time left in a book. The id is the device's replica
     /// id: each device writes only its own, and readers combine them all.
     Pace,
+    /// Time spent reading a book on one device. The id is the device's replica id and the book's
+    /// (`time_id`): each device writes only its own, and readers add them up.
+    Time,
 }
 
 impl Kind {
@@ -77,11 +80,12 @@ impl Kind {
             Kind::Member => "member",
             Kind::Cover => "cover",
             Kind::Pace => "pace",
+            Kind::Time => "time",
         }
     }
 
     /// Every kind this version understands.
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 11] = [
         Kind::Book,
         Kind::Progress,
         Kind::Bookmark,
@@ -92,6 +96,7 @@ impl Kind {
         Kind::Member,
         Kind::Cover,
         Kind::Pace,
+        Kind::Time,
     ];
 
     pub fn parse(value: &str) -> Result<Self> {
@@ -253,6 +258,26 @@ pub fn validate_pace(value: &PaceValue) -> Result<()> {
     check(value.epub.as_ref().is_none_or(reading) && value.pdf.as_ref().is_none_or(reading) && time(value.at))
 }
 
+/// A time record's id: the device's and the book's, so each device keeps its own count.
+pub fn time_id(device: &str, book: &str) -> String {
+    format!("{device}:{book}")
+}
+
+/// Minutes spent reading a book on one device.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TimeValue {
+    pub minutes: f64,
+    pub at: i64,
+}
+
+/// More than this (in minutes, about nineteen years) isn't reading time.
+pub const MAX_MINUTES_READ: f64 = 1e7;
+
+pub fn validate_time(value: &TimeValue) -> Result<()> {
+    check(value.minutes.is_finite() && (0.0..=MAX_MINUTES_READ).contains(&value.minutes) && time(value.at))
+}
+
 /// When a book was starred, finished or added to a collection.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -345,7 +370,8 @@ pub fn validate_record(record: &Record) -> Result<()> {
     match record.kind {
         Kind::Book | Kind::Progress | Kind::Favorite | Kind::Finished | Kind::Cover => check(is_sha256(&record.id))?,
         Kind::Bookmark | Kind::Highlight | Kind::Collection | Kind::Pace => check(is_uuid(&record.id))?,
-        Kind::Member => check(parse_member_id(&record.id).is_some())?,
+        // Both are a UUID (a collection's, a device's) and a book's id.
+        Kind::Member | Kind::Time => check(parse_member_id(&record.id).is_some())?,
     }
     let Some(value) = &record.value else { return Ok(()) };
     let value = value.clone();
@@ -363,6 +389,7 @@ pub fn validate_record(record: &Record) -> Result<()> {
             check(time(cover.at) && cover_image(&cover).is_some())
         }
         Kind::Pace => validate_pace(&serde_json::from_value(value).map_err(|_| invalid())?),
+        Kind::Time => validate_time(&serde_json::from_value(value).map_err(|_| invalid())?),
         Kind::Favorite | Kind::Finished | Kind::Member => {
             let marked: MarkedValue = serde_json::from_value(value).map_err(|_| invalid())?;
             check(time(marked.at))

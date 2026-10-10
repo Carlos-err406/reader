@@ -14,7 +14,7 @@ interface Props {
   onSave: (name: string) => Promise<void>;
 }
 
-/** Asks for a short name, such as a collection's, in a sheet with the keyboard ready. */
+/** Asks for a short name, such as a tag's, in a sheet with the keyboard ready. */
 export function NameSheet({ open, onOpenChange, title, description, initial = "", confirm, onSave }: Props) {
   const [name, setName] = useState(initial);
   const [error, setError] = useState<string>();

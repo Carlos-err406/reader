@@ -12,6 +12,8 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   /** Font, size and layout only matter while reading. */
   reading: boolean;
+  /** PDFs magnify instead of changing text size: their zoom, in place of the text size. */
+  zoom?: { level: number; canIn: boolean; canOut: boolean; step: (direction: 1 | -1) => void; reset: () => void };
 }
 
 function Setting({ title, children }: { title: string; children: ReactNode }) {
@@ -82,7 +84,7 @@ function Choice<T extends string>({ value, options, onChange, label }: {
   );
 }
 
-export function DisplaySheet({ open, onOpenChange, reading }: Props) {
+export function DisplaySheet({ open, onOpenChange, reading, zoom }: Props) {
   const { display, setDisplay, dark } = useDisplay();
 
   return (
@@ -150,31 +152,53 @@ export function DisplaySheet({ open, onOpenChange, reading }: Props) {
             </div>
           </Setting>
 
-          <Setting title="Text size">
-            <div className="flex items-center gap-3">
-              <Button
-                variant="outline"
-                size="icon-lg"
-                aria-label="Smaller text"
-                disabled={display.size <= SIZES[0]}
-                onClick={() => setDisplay({ size: stepSize(display.size, -1) })}
-              >
-                <Minus />
-              </Button>
-              <output className="flex-1 text-center font-semibold tabular-nums" aria-live="polite">
-                {display.size}%
-              </output>
-              <Button
-                variant="outline"
-                size="icon-lg"
-                aria-label="Larger text"
-                disabled={display.size >= SIZES[SIZES.length - 1]!}
-                onClick={() => setDisplay({ size: stepSize(display.size, 1) })}
-              >
-                <Plus />
-              </Button>
-            </div>
-          </Setting>
+          {zoom ? (
+            <Setting title="Zoom">
+              <div className="flex items-center gap-3">
+                <Button variant="outline" size="icon-lg" aria-label="Zoom out" disabled={!zoom.canOut} onClick={() => zoom.step(-1)}>
+                  <Minus />
+                </Button>
+                <button
+                  type="button"
+                  className="flex-1 rounded-md py-2 text-center font-semibold tabular-nums hover:bg-accent"
+                  onClick={zoom.reset}
+                  aria-label={`${zoom.level}%: fit to screen`}
+                  title="Fit to screen"
+                >
+                  {zoom.level}%
+                </button>
+                <Button variant="outline" size="icon-lg" aria-label="Zoom in" disabled={!zoom.canIn} onClick={() => zoom.step(1)}>
+                  <Plus />
+                </Button>
+              </div>
+            </Setting>
+          ) : (
+            <Setting title="Text size">
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="outline"
+                  size="icon-lg"
+                  aria-label="Smaller text"
+                  disabled={display.size <= SIZES[0]}
+                  onClick={() => setDisplay({ size: stepSize(display.size, -1) })}
+                >
+                  <Minus />
+                </Button>
+                <output className="flex-1 text-center font-semibold tabular-nums" aria-live="polite">
+                  {display.size}%
+                </output>
+                <Button
+                  variant="outline"
+                  size="icon-lg"
+                  aria-label="Larger text"
+                  disabled={display.size >= SIZES[SIZES.length - 1]!}
+                  onClick={() => setDisplay({ size: stepSize(display.size, 1) })}
+                >
+                  <Plus />
+                </Button>
+              </div>
+            </Setting>
+          )}
 
           <Setting title="Line spacing">
             <Choice<Spacing>

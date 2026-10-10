@@ -29,8 +29,14 @@ export function highlightCss(dark: boolean): string {
   return [
     ...SWATCHES.map((s) => `::highlight(${highlightName(s.id)}) { background-color: ${dark ? s.dark : s.light}; }`),
     `::highlight(${SEARCH_MARK}) { background-color: ${dark ? "rgb(255 150 30 / 0.6)" : "rgb(255 140 0 / 0.5)"}; }`,
+    `::highlight(${ALOUD_MARK}) { background-color: ${dark ? ALOUD_DARK : ALOUD_LIGHT}; }`,
   ].join("\n");
 }
+
+/** The CSS highlight marking the sentence being read aloud. */
+export const ALOUD_MARK = "reader-aloud";
+const ALOUD_LIGHT = "rgb(20 184 166 / 0.24)";
+const ALOUD_DARK = "rgb(45 212 191 / 0.3)";
 
 /** The CSS highlight marking the search match being looked at. */
 export const SEARCH_MARK = "reader-search";

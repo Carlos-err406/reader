@@ -2,6 +2,7 @@ mod error;
 mod google;
 mod library;
 mod opened;
+mod speech;
 mod store;
 mod sync;
 mod system_ui;
@@ -200,6 +201,18 @@ fn set_pace(pace: sync::model::PaceValue, state: State<'_, AppState>) -> Result<
 }
 
 #[tauri::command]
+fn get_time_read(book_id: String, state: State<'_, AppState>) -> Result<f64> {
+    library::time_read(&state.store, &book_id)
+}
+
+#[tauri::command]
+fn add_time_read(book_id: String, minutes: f64, state: State<'_, AppState>) -> Result<f64> {
+    let total = library::add_time_read(&state.store, &book_id, minutes)?;
+    state.sync.local_changed();
+    Ok(total)
+}
+
+#[tauri::command]
 fn set_favorite(book_id: String, on: bool, state: State<'_, AppState>) -> Result<()> {
     if library::set_mark(&state.store, sync::model::Kind::Favorite, &book_id, on)? {
         state.sync.local_changed();
@@ -368,6 +381,7 @@ pub fn run() {
         .plugin(google::plugin())
         .plugin(system_ui::plugin())
         .plugin(system_ui::updater())
+        .plugin(speech::plugin())
         .plugin(opened::android::plugin());
     builder
         .setup(|app| {
@@ -440,6 +454,8 @@ pub fn run() {
             set_finished,
             get_paces,
             set_pace,
+            get_time_read,
+            add_time_read,
             set_book_cover,
             edit_book,
             list_collections,
@@ -460,6 +476,10 @@ pub fn run() {
             system_ui::set_immersive,
             system_ui::keep_awake,
             system_ui::volume_keys,
+            speech::speech_voices,
+            speech::speech_speak,
+            speech::speech_stop,
+            speech::speech_install_voices,
             check_apk_update,
             system_ui::install_update,
             open_link,

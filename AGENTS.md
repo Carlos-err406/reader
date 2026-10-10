@@ -2,7 +2,7 @@
 
 A Tauri 2 app (macOS + Android) for reading PDF/EPUB, with library, position and bookmark sync through the user's Google Drive. Design: `docs/architecture.md`. OAuth: `docs/google-setup.md`.
 
-- Keep one codebase. Platform differences live behind `cfg(target_os = "android")` in `src-tauri/src/google/`, `system_ui.rs` and `app_foreground`. Kotlin lives only in `gen/android/app/src/main/java/org/reader/books/`: `GoogleAuthPlugin.kt`, `SystemUiPlugin.kt` and `AppUpdatePlugin.kt`.
+- Keep one codebase. Platform differences live behind `cfg(target_os = "android")` in `src-tauri/src/google/`, `system_ui.rs`, `speech.rs` and `app_foreground`. Kotlin lives only in `gen/android/app/src/main/java/org/reader/books/`: `GoogleAuthPlugin.kt`, `SystemUiPlugin.kt`, `AppUpdatePlugin.kt`, `OpenedFilesPlugin.kt` and `SpeechPlugin.kt`.
 - The sync protocol follows Tasker (`~/Developer/tasker/packages/core/src/sync`): HLC revisions, immutable per-replica checkpoints with pre-generated ids, full validation before apply, tombstones, and no transaction across an await. Don't swap in a shared mutable file or whole-database replacement.
 - Every synced write goes through `Store::stamp`, and every mutating command calls `sync.local_changed()`.
 - Book bytes are BLOBs in `blobs`, keyed by SHA-256. Never return them in list queries.

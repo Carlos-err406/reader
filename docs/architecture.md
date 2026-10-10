@@ -28,16 +28,19 @@ Tokens never enter the webview. The UI never sees Drive.
 | `member`   | `<collection id>:<book id>` | at (when the book was added)                |
 | `cover`    | book id                   | image (base64 JPEG or PNG, at most 256 KB), at |
 | `pace`     | device (replica) id       | epub and pdf: units read, minutes; at         |
+| `time`     | `<device id>:<book id>`   | minutes spent reading the book; at            |
 
 A highlight's `location` is an EPUB CFI range, or for PDFs the first page, a colon and JSON rectangles `[[page, x, y, width, height], …]`. `color` is one of yellow, green, blue, pink or purple. Highlighting the same passage again recolours it.
 
 Covers drawn from a book's file are a local cache on each device (the `covers` table) and never sync. A cover the reader chooses does, inside its `cover` record, so it's kept small: the app scales it to fit 480×720 and saves it as a JPEG of at most 200 KB. A book's title and author live in its `book` record; editing them stamps a new one, and re-importing the same file keeps them.
 
-A book's place in a collection is its own `member` record, so adding books to a collection on two devices at once loses neither. Deleting a collection tombstones it and its members; the books stay. Favorites and finished are separate records, so starring a book on one device while finishing it on another can't overwrite either. Unstarring, or marking a book not finished, tombstones the record. Saving a position at the end of a book (a PDF's last page, or 99% of an EPUB) adds a `finished` record in the same transaction, unless one exists.
+The app calls collections **tags**; the records keep their names so older versions still sync them. A book's place in a collection is its own `member` record, so adding books to a collection on two devices at once loses neither. Deleting a collection tombstones it and its members; the books stay. Favorites and finished are separate records, so starring a book on one device while finishing it on another can't overwrite either. Unstarring, or marking a book not finished, tombstones the record. Saving a position at the end of a book (a PDF's last page, or 99% of an EPUB) adds a `finished` record in the same transaction, unless one exists.
 
 A `pace` is one device's reading speed for the reader's "time left": units are EPUB locations (about 1200 characters) or PDF pages, over that device's latest two hours or so of reading. Each device writes only its own record, so devices never overwrite each other, and the reader adds them all up.
 
-`value: null` is a tombstone. Removing a book tombstones the book, its bookmarks, highlights and marks. A device only drops its local copy of the bytes after it receives the tombstone. A missing record on the remote side never deletes anything.
+A `time` is how long one device has spent reading a book, kept the same way: one record per device and book, added up for the reader's "1 h 20 min read". Both only count while the app is in front (visible, and on desktop the focused window), and a pause of over five minutes counts for nothing.
+
+`value: null` is a tombstone. Removing a book tombstones the book, its bookmarks, highlights, marks and every device's time. A device only drops its local copy of the bytes after it receives the tombstone. A missing record on the remote side never deletes anything.
 
 ## Sync protocol (ported from Tasker)
 

@@ -87,7 +87,7 @@ export interface Status {
 }
 
 export interface Changed {
-  kind: "book" | "progress" | "bookmark" | "highlight" | "favorite" | "finished" | "collection" | "member" | "cover" | "pace";
+  kind: "book" | "progress" | "bookmark" | "highlight" | "favorite" | "finished" | "collection" | "member" | "cover" | "pace" | "time";
   id: string;
 }
 
@@ -142,6 +142,10 @@ export const api = {
   setFinished: (bookId: string, on: boolean) => invoke<void>("set_finished", { bookId, on }),
   paces: () => invoke<Paces>("get_paces"),
   setPace: (pace: DevicePace) => invoke<void>("set_pace", { pace }),
+  /** Minutes spent reading a book, on every device. */
+  timeRead: (bookId: string) => invoke<number>("get_time_read", { bookId }),
+  /** Adds to this device's reading time for a book; returns every device's together. */
+  addTimeRead: (bookId: string, minutes: number) => invoke<number>("add_time_read", { bookId, minutes }),
   collections: () => invoke<Collection[]>("list_collections"),
   createCollection: (name: string) => invoke<Collection>("create_collection", { name }),
   renameCollection: (id: string, name: string) => invoke<void>("rename_collection", { id, name }),
@@ -174,6 +178,17 @@ export const api = {
   setImmersive: (on: boolean) => invoke<void>("set_immersive", { on }),
   /** Android: keep the screen from sleeping. A no-op on desktop. */
   keepAwake: (on: boolean) => invoke<void>("keep_awake", { on }),
+  /** Android: the phone's text-to-speech voices. */
+  speechVoices: () => invoke<{ id: string; name: string; lang: string }[]>("speech_voices"),
+  /** Android: speaks the texts in turn, each the utterance `<utterance>:<index>`, reporting to `events`. */
+  speechSpeak: (
+    texts: string[],
+    how: { utterance: number; voice: string | null; lang: string | null; rate: number },
+    events: Channel<{ start?: string; done?: string; error?: string }>,
+  ) => invoke<void>("speech_speak", { texts, ...how, events }),
+  speechStop: () => invoke<void>("speech_stop"),
+  /** Android: opens the phone's screen for adding voices. */
+  speechInstallVoices: () => invoke<void>("speech_install_voices"),
   /** Android: while on, the volume buttons send page turns to `keys` instead of changing the volume. */
   volumeKeys: (on: boolean, keys: Channel<{ turn: "next" | "previous" }>) => invoke<void>("volume_keys", { on, keys }),
 };
